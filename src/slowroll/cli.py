@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from .config import ConfigError, load_config
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="slowroll", description="Health-gated progressive rollout for Flagsmith")
@@ -26,5 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        load_config(args.config)
+    except ConfigError as e:
+        for err in e.errors:
+            print(f"error: {err}", file=sys.stderr)
+        return 2
     print(f"slowroll {args.command}: not implemented", file=sys.stderr)
     return 1
