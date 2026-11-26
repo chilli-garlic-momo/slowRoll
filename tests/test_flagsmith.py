@@ -164,3 +164,11 @@ def test_doctor_fails_when_default_is_on():
 def test_doctor_reports_auth_failure_and_keeps_going():
     code, lines = run_doctor(FakeFs(fail_auth=True))
     assert code == 1 and sum(l.startswith("FAIL") for l in lines) == 1 and len(lines) == 6
+
+
+def test_segment_percent_reads_the_real_shape_and_tolerates_garbage():
+    from slowroll.flagsmith import segment_percent
+
+    assert segment_percent({"rules": percent_rules(25)}) == 25
+    assert segment_percent({"rules": []}) is None
+    assert segment_percent({}) is None

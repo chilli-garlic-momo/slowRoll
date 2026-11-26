@@ -15,8 +15,10 @@ def test_help_exits_zero():
     assert e.value.code == 0
 
 
-@pytest.mark.parametrize("command", ["apply", "plan", "tick", "loop", "status", "halt", "reset"])
-def test_commands_registered_and_unimplemented(command):
+@pytest.mark.parametrize("command", ["tick", "loop"])
+def test_commands_registered_and_unimplemented(command, monkeypatch):
+    monkeypatch.setenv("FLAGSMITH_API_URL", "https://fs.test")
+    monkeypatch.setenv("FLAGSMITH_API_KEY", "k")
     assert main([command, EXAMPLE]) == 1
 
 
@@ -31,8 +33,9 @@ def test_missing_config_exits_2(tmp_path):
     assert main(["tick", str(tmp_path / "nope.yml")]) == 2
 
 
-def test_doctor_without_env_vars_exits_1(monkeypatch, capsys):
+@pytest.mark.parametrize("command", ["doctor", "apply", "plan", "status", "halt", "reset"])
+def test_live_commands_without_env_vars_exit_1(command, monkeypatch, capsys):
     monkeypatch.delenv("FLAGSMITH_API_URL", raising=False)
     monkeypatch.delenv("FLAGSMITH_API_KEY", raising=False)
-    assert main(["doctor", EXAMPLE]) == 1
+    assert main([command, EXAMPLE]) == 1
     assert "FLAGSMITH_API_URL" in capsys.readouterr().err
