@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timezone
 
 from .config import Config, ConfigError, load_config
 from .flagsmith import SlowrollError, client_from_env
+from .github import github_from_env
+from .tick import apply, halt, reset, status
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,11 +76,22 @@ def main(argv: list[str] | None = None) -> int:
         for err in e.errors:
             print(f"error: {err}", file=sys.stderr)
         return 2
-    if args.command == "doctor":
-        try:
-            return doctor(cfg, client_from_env())
-        except SlowrollError as e:
-            print(f"error: {e}", file=sys.stderr)
-            return 1
+    now = datetime.now(timezone.utc)
+    try:
+        fs = client_from_env()
+        if args.command == "doctor":
+            return doctor(cfg, fs)
+        if args.command in ("apply", "plan", "status", "halt", "reset"):
+            gh = github_from_env(cfg)
+            if args.command in ("apply", "plan"):
+                return apply(cfg, fs, gh, now, dry_run=args.command == "plan" or args.dry_run)
+            if args.command == "status":
+                return status(cfg, fs, gh)
+            if args.command == "halt":
+                return halt(cfg, fs, gh, now, args.reason)
+            return reset(cfg, fs, gh, now)
+    except SlowrollError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     print(f"slowroll {args.command}: not implemented", file=sys.stderr)
     return 1

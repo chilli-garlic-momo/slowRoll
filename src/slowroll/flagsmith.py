@@ -81,3 +81,10 @@ def client_from_env() -> Flagsmith:
     if not url or not key:
         raise SlowrollError("set FLAGSMITH_API_URL and FLAGSMITH_API_KEY")
     return Flagsmith(url, key)
+
+
+def segment_percent(segment: dict[str, Any]) -> int | None:
+    try:
+        return int(segment["rules"][0]["rules"][0]["conditions"][0]["value"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
