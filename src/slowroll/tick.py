@@ -73,6 +73,7 @@ def apply(cfg: Config, fs: Any, gh: Any, now: datetime, dry_run: bool = False, o
     flag = fs.get_flag(cfg.environment, fid)
     if flag["environment_default"]["enabled"]:
         raise SlowrollError("the flag is on in the environment default; turn it off first")
+    existing_issue = gh.find_issue(title(cfg))
 
     verb = "would " if dry_run else ""
     changes: list[str] = []
@@ -88,7 +89,7 @@ def apply(cfg: Config, fs: Any, gh: Any, now: datetime, dry_run: bool = False, o
         if not dry_run:
             fs.set_override(cfg.environment, fid, seg["id"], False)
 
-    if gh.find_issue(title(cfg)) is None:
+    if existing_issue is None:
         changes.append(f"{verb}open issue {title(cfg)!r} with labels slowroll and slowroll/approve")
         if not dry_run:
             gh.ensure_labels()

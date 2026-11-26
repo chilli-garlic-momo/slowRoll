@@ -184,3 +184,14 @@ def test_reset_without_open_issue_still_resets_flagsmith_and_says_apply():
     fs.overrides[1] = True
     out = lines_of(reset, CFG, fs, gh, NOW)
     assert fs.overrides[1] is False and any("slowroll apply" in l for l in out)
+
+
+def test_apply_checks_github_before_writing_to_flagsmith():
+    class BrokenGh(FakeGh):
+        def find_issue(self, title):
+            raise SlowrollError("GET /issues: HTTP 401")
+
+    fs = FakeFs()
+    with pytest.raises(SlowrollError):
+        lines_of(apply, CFG, fs, BrokenGh(), NOW)
+    assert fs.writes == []

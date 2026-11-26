@@ -120,3 +120,17 @@ def test_permission_hint_in_403_error_without_token():
     with pytest.raises(SlowrollError) as e:
         g.close_issue(1)
     assert "issues=write" in str(e.value) and "tok" not in str(e.value)
+
+
+def test_malformed_token_is_rejected_without_echoing_it(monkeypatch):
+    from slowroll.config import parse_config
+    from slowroll.github import github_from_env
+
+    cfg = parse_config({"flag": "f", "project": 1, "environment": "e", "steps": [5], "soak": "1m",
+                        "health": {"url": "https://x.test/h"}, "github": {"repo": "o/r"}})
+    monkeypatch.setenv("GITHUB_TOKEN", "unknown command\nUsage: gh")
+    with pytest.raises(SlowrollError) as e:
+        github_from_env(cfg)
+    assert "unknown command" not in str(e.value)
+    monkeypatch.setenv("GITHUB_TOKEN", " ghp_abc\n")
+    assert github_from_env(cfg).headers["Authorization"] == "Bearer ghp_abc"
