@@ -37,6 +37,9 @@ module.exports = async (req, res) => {
   if (counts.treatment.req >= MIN_SAMPLES) {
     healthy = !(rate(counts.treatment) - rate(counts.control) > MAX_ERR_DELTA);
     detail = `treatment errors ${pct(counts.treatment)} vs control ${pct(counts.control)} over ${WINDOW}s`;
+  } else if (counts.treatment.req === 0 && counts.control.req >= MIN_SAMPLES) {
+    healthy = true;
+    detail = `no treatment traffic yet and control has ${counts.control.req} requests in the last ${WINDOW}s; nothing to compare`;
   }
   res.status(200).json({ healthy, detail, counts, window_seconds: WINDOW });
 };
