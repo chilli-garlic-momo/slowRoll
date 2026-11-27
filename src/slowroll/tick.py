@@ -73,7 +73,15 @@ def save(cfg: Config, gh: Any, issue: Issue, state: State, event: str | None, no
         gh.add_comment(issue.number, f"`{now.strftime('%Y-%m-%d %H:%M:%S')} UTC` {event}")
 
 
-def apply(cfg: Config, fs: Any, gh: Any, now: datetime, dry_run: bool = False, out: Callable[[str], None] = print) -> int:
+def _wait_until_listed(gh: Any, issue_title: str, sleep: Callable[[float], None], tries: int = 10) -> bool:
+    for _ in range(tries):
+        if gh.find_issue(issue_title) is not None:
+            return True
+        sleep(3)
+    return False
+
+
+def apply(cfg: Config, fs: Any, gh: Any, now: datetime, dry_run: bool = False, out: Callable[[str], None] = print, sleep: Callable[[float], None] = time.sleep) -> int:
     fid = fs.feature_id(cfg.project, cfg.flag)
     flag = fs.get_flag(cfg.environment, fid)
     if flag["environment_default"]["enabled"]:
@@ -100,6 +108,8 @@ def apply(cfg: Config, fs: Any, gh: Any, now: datetime, dry_run: bool = False, o
             gh.ensure_labels()
             issue = gh.create_issue(title(cfg), ISSUE_BODY)
             gh.add_comment(issue["number"], render_status(cfg, State()))
+            if not _wait_until_listed(gh, title(cfg), sleep):
+                changes.append("note: GitHub is slow to list the new issue; wait a few seconds before ticking")
 
     for line in changes or ["up to date"]:
         out(line)
