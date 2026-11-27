@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slowroll demo checkout</title>
+<style>
+  :root { --bg: #f7f7f8; --fg: #1b1b1f; --card: #fff; --line: #dcdce2; --muted: #66666f; --ok: #1a7f4b; --bad: #c62828; --unk: #8a6d00; --accent: #3b5bdb; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #131316; --fg: #ececf1; --card: #1c1c21; --line: #34343c; --muted: #9a9aa5; --ok: #4cc38a; --bad: #ff6b6b; --unk: #e0b43c; --accent: #7c93ff; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 32px 16px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  p { margin: 0 0 16px; color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: 600; border: 1px solid var(--line); }
+  .badge.treatment { color: var(--accent); border-color: var(--accent); }
+  button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 4px 8px 4px 0; }
+  .healthy-true { color: var(--ok); } .healthy-false { color: var(--bad); } .healthy-null { color: var(--unk); }
+  footer { color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Slowroll demo checkout</h1>
+  <p>A feature flag decides whether you see the control or the treatment checkout.</p>
+
+  <div class="card">
+    <div>You are in: <span id="badge" class="badge">...</span></div>
+    <p id="last" style="margin:12px 0">No request yet.</p>
+    <button id="go">Check out</button>
+  </div>
+
+  <div class="card">
+    <strong>Health seen by Slowroll</strong>
+    <div id="verdict" class="healthy-null" style="margin:8px 0">loading...</div>
+    <table>
+      <thead><tr><th></th><th>requests</th><th>errors</th></tr></thead>
+      <tbody>
+        <tr><td>control</td><td id="c-req">-</td><td id="c-err">-</td></tr>
+        <tr><td>treatment</td><td id="t-req">-</td><td id="t-err">-</td></tr>
+      </tbody>
+    </table>
+    <p id="detail" style="margin:8px 0 0"></p>
+  </div>
+
+  <footer>Traffic in this demo is simulated. A load generator sends the requests, and no real users or purchases are involved.</footer>
+</main>
+<script>
+  function getUid() {
+    try {
+      let id = localStorage.getItem('slowroll-uid');
+      if (!id) { id = 'user-' + Math.random().toString(36).slice(2, 10); localStorage.setItem('slowroll-uid', id); }
+      return id;
+    } catch (e) {
+      return 'user-' + Math.random().toString(36).slice(2, 10);
+    }
+  }
+  const uid = getUid();
+  const $ = (id) => document.getElementById(id);
+
+  async function checkout() {
+    try {
+      const res = await fetch('/api/checkout?uid=' + encodeURIComponent(uid));
+      const body = await res.json();
+      $('badge').textContent = body.variant;
+      $('badge').className = 'badge ' + body.variant;
+      $('last').textContent = 'HTTP ' + res.status + ': ' + (body.ok ? 'checkout ok' : 'checkout failed')
+        + (body.degraded ? ' (flag service unavailable, showing control)' : '');
+    } catch (e) {
+      $('last').textContent = 'Request failed: ' + e.message;
+    }
+  }
+
+  async function poll() {
+    try {
+      const h = await (await fetch('/api/health', { cache: 'no-store' })).json();
+      const word = h.healthy === true ? 'healthy' : h.healthy === false ? 'unhealthy' : 'unknown';
+      $('verdict').textContent = word;
+      $('verdict').className = 'healthy-' + h.healthy;
+      $('detail').textContent = h.detail || '';
+      if (h.counts) {
+        $('c-req').textContent = h.counts.control.req; $('c-err').textContent = h.counts.control.err;
+        $('t-req').textContent = h.counts.treatment.req; $('t-err').textContent = h.counts.treatment.err;
+      }
+    } catch (e) {
+      $('verdict').textContent = 'unknown';
+      $('detail').textContent = 'Could not reach /api/health';
+    }
+  }
+
+  $('go').addEventListener('click', checkout);
+  checkout();
+  poll();
+  setInterval(poll, 3000);
+</script>
+</body>
+</html>
