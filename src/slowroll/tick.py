@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import sys
+import time
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 
-from .config import Config
+from .config import Config, parse_duration
+from .decide import decide
 from .flagsmith import SlowrollError, segment_percent
+from .health import Health
 from .state import State, StateError, dump_marker, parse_marker
 
 ISSUE_BODY = (
@@ -63,9 +67,10 @@ def load(cfg: Config, gh: Any) -> Issue:
     return issue
 
 
-def save(cfg: Config, gh: Any, issue: Issue, state: State, event: str, now: datetime) -> None:
+def save(cfg: Config, gh: Any, issue: Issue, state: State, event: str | None, now: datetime) -> None:
     gh.update_comment(issue.comment_id, render_status(cfg, state))
-    gh.add_comment(issue.number, f"`{now.strftime('%Y-%m-%d %H:%M:%S')} UTC` {event}")
+    if event:
+        gh.add_comment(issue.number, f"`{now.strftime('%Y-%m-%d %H:%M:%S')} UTC` {event}")
 
 
 def apply(cfg: Config, fs: Any, gh: Any, now: datetime, dry_run: bool = False, out: Callable[[str], None] = print) -> int:
@@ -142,3 +147,84 @@ def reset(cfg: Config, fs: Any, gh: Any, now: datetime, out: Callable[[str], Non
     else:
         save(cfg, gh, issue, State(), "reset: override off, back to the first step", now)
     return 0
+
+
+def _count(state: State, health: Health) -> State:
+    if health.healthy is True:
+        return replace(state, strikes=0, unknown=0)
+    if health.healthy is False:
+        return replace(state, strikes=state.strikes + 1, unknown=0)
+    return replace(state, unknown=state.unknown + 1)
+
+
+def _line(cfg: Config, state: State, kind: str, health: Health, dry_run: bool = False) -> str:
+    percent = cfg.steps[state.index] if state.index >= 0 else "-"
+    label = {True: "healthy", False: "unhealthy", None: "unknown"}[health.healthy]
+    return f"{cfg.flag} status={state.status} percent={percent} action={kind} health={label}" + (" (dry run)" if dry_run else "")
+
+
+def tick(cfg: Config, fs: Any, gh: Any, now: datetime, fetch: Callable[[str], Health], dry_run: bool = False, out: Callable[[str], None] = print) -> int:
+    issue = load(cfg, gh)
+    state = issue.state
+    health = fetch(cfg.health_url)
+    if state.status in ("halted", "done"):
+        out(_line(cfg, state, "NOOP", health, dry_run))
+        return 0
+
+    approved = gh.approved(issue.number) if cfg.approval_before_step is not None else False
+    action = decide(state, cfg, health, now, approved)
+    new = _count(state, health)
+    detail = health.detail or "no detail"
+    event = None
+
+    if action.kind == "ADVANCE":
+        new = replace(new, status="ramping", index=action.index, advanced_at=now.isoformat(), reason=None)
+        percent = cfg.steps[action.index]
+        event = f"advanced to step {action.index + 1} of {len(cfg.steps)} ({percent}%); health is healthy"
+        if not dry_run:
+            seg = fs.find_segment(cfg.project, segment_name(cfg))
+            if seg is None:
+                raise SlowrollError(f"segment {segment_name(cfg)!r} is missing; run slowroll apply")
+            fs.set_segment_percent(cfg.project, seg["id"], percent)
+            if state.index == -1:
+                fs.set_override(cfg.environment, fs.feature_id(cfg.project, cfg.flag), seg["id"], True)
+    elif action.kind == "HALT":
+        new = replace(new, status="halted", reason=action.reason)
+        event = f"HALTED: {action.reason}. The segment override is off, so the flag is off for everyone."
+        if not dry_run:
+            _override_off(cfg, fs)
+    elif action.kind == "WAIT_APPROVAL":
+        new = replace(new, status="waiting")
+        event = f"waiting for approval before the {cfg.steps[state.index + 1]}% step. Add the label `slowroll/approve` to continue."
+    elif action.kind == "FINISH":
+        new = replace(new, status="done")
+        event = f"reached {cfg.steps[-1]}% and soaked; done. The flag stays at {cfg.steps[-1]}%; promote it or clean up the segment and override by hand."
+    elif action.kind == "STRIKE":
+        event = f"unhealthy ({detail}); strike {new.strikes} of {cfg.fail_after}"
+    elif action.kind == "HOLD_UNKNOWN" and action.comment:
+        event = f"health has been unknown for {new.unknown} ticks ({detail}); holding at the current step and not reverting"
+
+    if not dry_run:
+        if new != state or event:
+            save(cfg, gh, issue, new, event, now)
+        if action.kind == "FINISH":
+            gh.close_issue(issue.number)
+    out(_line(cfg, new, action.kind, health, dry_run))
+    if action.kind == "HALT":
+        print(f"::warning::Slowroll halted {cfg.flag}: {action.reason}")
+    return 0
+
+
+def loop(cfg: Config, fs: Any, gh: Any, every: str, fetch: Callable[[str], Health], sleep: Callable[[float], None] = time.sleep) -> int:
+    interval = parse_duration(every)
+    if interval is None:
+        raise SlowrollError("--every must look like 10s, 1m or 1h")
+    try:
+        while True:
+            try:
+                tick(cfg, fs, gh, datetime.now(timezone.utc), fetch)
+            except SlowrollError as e:
+                print(f"error: {e}", file=sys.stderr)
+            sleep(interval.total_seconds())
+    except KeyboardInterrupt:
+        return 0

@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from .config import Config, ConfigError, load_config
 from .flagsmith import SlowrollError, client_from_env
 from .github import github_from_env
-from .tick import apply, halt, reset, status
+from .health import fetch_health
+from .tick import apply, halt, loop, reset, status, tick
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         fs = client_from_env()
         if args.command == "doctor":
             return doctor(cfg, fs)
-        if args.command in ("apply", "plan", "status", "halt", "reset"):
+        if args.command in ("apply", "plan", "status", "halt", "reset", "tick", "loop"):
             gh = github_from_env(cfg)
             if args.command in ("apply", "plan"):
                 return apply(cfg, fs, gh, now, dry_run=args.command == "plan" or args.dry_run)
@@ -89,7 +90,11 @@ def main(argv: list[str] | None = None) -> int:
                 return status(cfg, fs, gh)
             if args.command == "halt":
                 return halt(cfg, fs, gh, now, args.reason)
-            return reset(cfg, fs, gh, now)
+            if args.command == "reset":
+                return reset(cfg, fs, gh, now)
+            if args.command == "tick":
+                return tick(cfg, fs, gh, now, fetch_health, dry_run=args.dry_run)
+            return loop(cfg, fs, gh, args.every, fetch_health)
     except SlowrollError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

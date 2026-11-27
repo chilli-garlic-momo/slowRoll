@@ -47,6 +47,12 @@ def _section(raw: dict, key: str, allowed: set[str], errs: list[str]) -> dict:
     return val
 
 
+def parse_duration(text: Any) -> timedelta | None:
+    if isinstance(text, str) and re.fullmatch(r"\d+[smh]", text):
+        return timedelta(seconds=int(text[:-1]) * SOAK_UNITS[text[-1]])
+    return None
+
+
 def parse_config(raw: Any) -> Config:
     if not isinstance(raw, dict):
         raise ConfigError(["config must be a YAML mapping"])
@@ -69,12 +75,10 @@ def parse_config(raw: Any) -> Config:
     elif any(a >= b for a, b in zip(steps, steps[1:])):
         errs.append("steps must be strictly increasing")
 
-    soak = raw.get("soak")
-    soak_td = timedelta(0)
-    if isinstance(soak, str) and re.fullmatch(r"\d+[smh]", soak):
-        soak_td = timedelta(seconds=int(soak[:-1]) * SOAK_UNITS[soak[-1]])
-    else:
+    soak_td = parse_duration(raw.get("soak"))
+    if soak_td is None:
         errs.append("soak must look like 30s, 10m or 2h")
+        soak_td = timedelta(0)
 
     approval = _section(raw, "approval", {"before_step"}, errs)
     before = approval.get("before_step")
