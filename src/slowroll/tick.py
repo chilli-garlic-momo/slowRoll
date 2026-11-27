@@ -174,7 +174,12 @@ def _line(cfg: Config, state: State, kind: str, health: Health, dry_run: bool = 
 
 
 def tick(cfg: Config, fs: Any, gh: Any, now: datetime, fetch: Callable[[str], Health], dry_run: bool = False, out: Callable[[str], None] = print) -> int:
-    issue = load(cfg, gh)
+    issue = find(cfg, gh)
+    if issue is None:
+        if gh.find_issue(title(cfg), state="closed") is None:
+            raise SlowrollError(f"no open issue {title(cfg)!r}; run slowroll apply")
+        out(f"{cfg.flag}: rollout finished and its issue is closed; nothing to do")
+        return 0
     state = issue.state
     health = fetch(cfg.health_url)
     if state.status in ("halted", "done"):

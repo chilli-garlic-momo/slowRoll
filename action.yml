@@ -1,0 +1,24 @@
+name: Slowroll
+description: Health-gated progressive rollout for self-hosted Flagsmith
+inputs:
+  command:
+    description: slowroll command to run, for example tick or halt
+    default: tick
+  config:
+    description: path to the rollout config
+    default: rollout.yml
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - run: pip install "$ACTION_PATH"
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+    - run: slowroll "$COMMAND" "$CONFIG"
+      shell: bash
+      env:
+        COMMAND: ${{ inputs.command }}
+        CONFIG: ${{ inputs.config }}

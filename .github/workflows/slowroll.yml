@@ -1,0 +1,25 @@
+name: slowroll
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+  repository_dispatch:
+    types: [slowroll-tick, slowroll-halt]
+concurrency:
+  group: slowroll
+  cancel-in-progress: false
+permissions:
+  issues: write
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        with:
+          command: ${{ github.event.action == 'slowroll-halt' && 'halt' || 'tick' }}
+        env:
+          FLAGSMITH_API_URL: ${{ secrets.FLAGSMITH_API_URL }}
+          FLAGSMITH_API_KEY: ${{ secrets.FLAGSMITH_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

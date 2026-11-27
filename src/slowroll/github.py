@@ -39,8 +39,8 @@ class GitHub:
         for name in LABELS:
             self.request("POST", "/labels", {"name": name}, allow=(422,))
 
-    def find_issue(self, title: str) -> dict[str, Any] | None:
-        issues = self.request("GET", "/issues?labels=slowroll&state=open&per_page=100") or []
+    def find_issue(self, title: str, state: str = "open") -> dict[str, Any] | None:
+        issues = self.request("GET", f"/issues?labels=slowroll&state={state}&per_page=100") or []
         return next((i for i in issues if i["title"] == title and "pull_request" not in i), None)
 
     def create_issue(self, title: str, body: str) -> dict[str, Any]:
