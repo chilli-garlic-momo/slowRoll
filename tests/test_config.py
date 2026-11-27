@@ -95,3 +95,11 @@ def test_missing_file_and_bad_yaml(tmp_path):
     p.write_text("flag: [unclosed")
     with pytest.raises(ConfigError):
         load_config(p)
+
+
+def test_parse_duration():
+    from slowroll.config import parse_duration
+
+    assert parse_duration("5s") == timedelta(seconds=5)
+    assert parse_duration("2h") == timedelta(hours=2)
+    assert parse_duration("5") is None and parse_duration(5) is None
