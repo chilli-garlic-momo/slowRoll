@@ -68,7 +68,9 @@ class FakeGh:
         self.writes.append("labels")
         self.labels_ensured += 1
 
-    def find_issue(self, title):
+    def find_issue(self, title, state="open"):
+        if state != "open":
+            return None
         return next((i for i in self.issues if i["title"] == title), None)
 
     def create_issue(self, title, body):
@@ -426,3 +428,12 @@ def test_apply_notes_when_the_issue_never_shows_up():
     out: list[str] = []
     apply(CFG, FakeFs(), HiddenGh(), NOW, out=out.append, sleep=lambda s: None)
     assert any("slow to list" in l for l in out)
+
+
+def test_tick_after_the_rollout_finished_is_a_clean_noop():
+    class ClosedGh(FakeGh):
+        def find_issue(self, title, state="open"):
+            return {"number": 1, "title": title} if state == "closed" else None
+
+    out = lines_of(tick, CFG, FakeFs(), ClosedGh(), NOW, lambda url: Health(True))
+    assert len(out) == 1 and "finished" in out[0]

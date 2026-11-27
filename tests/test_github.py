@@ -134,3 +134,9 @@ def test_malformed_token_is_rejected_without_echoing_it(monkeypatch):
     assert "unknown command" not in str(e.value)
     monkeypatch.setenv("GITHUB_TOKEN", " ghp_abc\n")
     assert github_from_env(cfg).headers["Authorization"] == "Bearer ghp_abc"
+
+
+def test_find_issue_can_look_at_closed_issues():
+    g, s = gh(FakeResponse(200, [{"number": 4, "title": "Slowroll: f"}]))
+    assert g.find_issue("Slowroll: f", state="closed")["number"] == 4
+    assert "state=closed" in s.calls[0]["url"]
