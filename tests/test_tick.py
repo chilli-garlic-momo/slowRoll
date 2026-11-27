@@ -404,8 +404,18 @@ def test_apply_waits_until_github_lists_the_new_issue():
     out: list[str] = []
     gh = LaggyGh()
     apply(CFG, FakeFs(), gh, NOW, out=out.append, sleep=sleeps.append)
-    assert sleeps == [3, 3, 3] and not any("slow" in l for l in out)
+    assert sleeps == [3, 3, 3] and not any("slow to list" in l for l in out)
     assert gh.find_issue("Slowroll: f") is not None
+
+
+def test_apply_notes_when_the_issue_never_shows_up():
+    class HiddenGh(FakeGh):
+        def find_issue(self, title):
+            return None if self.issues else super().find_issue(title)
+
+    out: list[str] = []
+    apply(CFG, FakeFs(), HiddenGh(), NOW, out=out.append, sleep=lambda s: None)
+    assert any("slow to list" in l for l in out)
 
 
 def test_apply_notes_when_the_issue_never_shows_up():
