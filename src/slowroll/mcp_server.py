@@ -10,8 +10,10 @@ import yaml
 
 try:
     from mcp.server.mcpserver import MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
 except ImportError:
     from mcp.server.fastmcp import FastMCP as MCPServer
+    from mcp.server.fastmcp.exceptions import ToolError
 
 from .config import ConfigError, load_config, parse_config
 from .flagsmith import SlowrollError, client_from_env
@@ -21,9 +23,9 @@ from .tick import halt, status
 mcp = MCPServer("slowroll")
 
 
-def _fail(e: Exception) -> ValueError:
+def _fail(e: Exception) -> ToolError:
     errors = getattr(e, "errors", None)
-    return ValueError("; ".join(errors) if errors else str(e))
+    return ToolError("; ".join(errors) if errors else str(e))
 
 
 def build_pull_request(gh: Any, raw: dict[str, Any], path: str, now: datetime) -> str:
