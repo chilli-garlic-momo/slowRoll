@@ -8,8 +8,6 @@ Slowroll ramps a feature flag through a percentage segment step by step, checks 
 
 Release Pipelines for open-source Flagsmith. At the time of writing, Flagsmith's own Release Pipelines is a closed beta whose code lives in a private enterprise package, and the open-source edition has no audit log and no change requests. Slowroll is a small independent controller that covers the progressive-rollout part using only Flagsmith's admin API and GitHub. It is not affiliated with Flagsmith.
 
-What you get on top of plain open-source Flagsmith:
-
 | Need | How Slowroll does it |
 |---|---|
 | Gradual ramp | A `% Split` segment whose percentage is raised step by step |
@@ -17,7 +15,7 @@ What you get on top of plain open-source Flagsmith:
 | Human approval | A GitHub label, checked against the labeler's repo permission |
 | Audit trail | One GitHub issue: a live status comment plus a timestamped comment per action |
 
-What you give up: there is no UI, decisions happen once per tick (every few minutes), and Slowroll uses Flagsmith endpoints that are marked experimental (see [Limitations](#limitations)).
+What you give up: there is no UI, decisions happen once per tick (every few minutes in Actions), and Slowroll uses Flagsmith endpoints that are marked experimental (see [Limitations](#limitations)).
 
 ## How it works
 
@@ -39,32 +37,32 @@ The flag stays off in the environment default. A segment named `slowroll:<flag>`
 
 ## Quickstart
 
-You need a running Flagsmith (tested on self-hosted 2.292.0, see [deploy-render.md](docs/deploy-render.md)), Python 3.11+, and a GitHub repo you can write issues to. It should take about five minutes.
+You need a running Flagsmith (tested on self-hosted 2.292.0, see [deploy-render.md](docs/deploy-render.md)), Python 3.11+ with [uv](https://docs.astral.sh/uv/), and a GitHub repo you can write issues to. It should take about five minutes.
 
 **1. In Flagsmith**
 
 - Create a boolean flag, for example `quickstart_demo`, and leave it **off** in your environment.
-- Note the **project id** (the number after `/project/` in the dashboard URL) and the environment's **client-side environment key** (Environment settings, Keys).
+- Find the **project id** (the number after `/project/` in the dashboard URL) and the environment's **client-side environment key** (Environment settings, Keys).
 - Create an organisation **Admin API key** (Organisation Settings, API Keys).
 
-**2. Set your credentials**
+**2. Set your credentials and values.** Replace each value, and keep secrets out of shared terminals:
 
 ```bash
-export FLAGSMITH_API_URL=https://your-flagsmith.example.com
+export FLAGSMITH_API_URL=https://your-flagsmith.example.com   # no trailing slash
 export FLAGSMITH_API_KEY=your-admin-api-key
-export GITHUB_TOKEN=a-token-with-issues-write
+export GITHUB_TOKEN=a-token-with-issues-write                  # fine-grained token: Issues read and write on the repo
 export GITHUB_REPOSITORY=your-name/your-repo
+export FS_PROJECT=1                                            # your project id
+export FS_ENV_KEY=your-client-side-environment-key
 ```
 
-For `GITHUB_TOKEN`, use `gh auth token` on a recent GitHub CLI, or a fine-grained token with Issues read and write on that repo.
-
-**3. Write `rollout.yml`** and a stand-in health endpoint
+**3. Write `rollout.yml`** and a stand-in health endpoint. The variables above fill in the config, so there is nothing to edit by hand:
 
 ```bash
-cat > rollout.yml <<'YML'
+cat > rollout.yml <<YML
 flag: quickstart_demo
-project: 1
-environment: YOUR_ENVIRONMENT_CLIENT_KEY
+project: $FS_PROJECT
+environment: $FS_ENV_KEY
 steps: [10, 50, 100]
 soak: 10s
 health:
@@ -78,22 +76,23 @@ python3 -m http.server 8000 &
 **4. Check, plan, apply**
 
 ```bash
-uvx --from git+https://github.com/chilli-garlic-momo/slowRoll slowroll doctor rollout.yml
-uvx --from git+https://github.com/chilli-garlic-momo/slowRoll slowroll plan rollout.yml
-uvx --from git+https://github.com/chilli-garlic-momo/slowRoll slowroll apply rollout.yml
+slowroll() { uvx --from git+https://github.com/chilli-garlic-momo/slowRoll slowroll "$@"; }
+slowroll doctor rollout.yml
+slowroll plan rollout.yml
+slowroll apply rollout.yml
 ```
 
-`doctor` prints one line per check. `plan` shows what `apply` would do and writes nothing. `apply` creates the segment, a disabled override, two labels and the tracking issue. It is safe to run again.
+`doctor` prints one line per check and should end with six `ok` lines (the segment line may say it is missing, which is fine). `plan` shows what `apply` would do and writes nothing. `apply` creates the segment, a disabled override, two labels and the tracking issue, and is safe to run again.
 
 **5. Ramp**
 
 ```bash
-uvx --from git+https://github.com/chilli-garlic-momo/slowRoll slowroll loop rollout.yml --every 10s
+slowroll loop rollout.yml --every 10s
 ```
 
-You should see `ADVANCE` to 10%, 50% and 100%, then `FINISH`. Open the issue `Slowroll: quickstart_demo` to read the audit trail. To see a revert, change `health.json` to `{"healthy": false}` during a run: two unhealthy ticks in a row halt the rollout.
+You should see `ADVANCE` to 10%, 50% and 100%, then `FINISH`. Open the issue `Slowroll: quickstart_demo` to read the audit trail. To see a revert, edit `health.json` to `{"healthy": false}` during a run: two unhealthy ticks in a row halt the rollout. Stop the loop with Ctrl-C and the web server with `kill %1`.
 
-Prefer `pip`? `pip install git+https://github.com/chilli-garlic-momo/slowRoll` gives you the `slowroll` command.
+Prefer `pip`? `pip install git+https://github.com/chilli-garlic-momo/slowRoll` gives you the `slowroll` command. To clean up afterwards, delete the segment `slowroll:quickstart_demo` in the dashboard.
 
 ## Commands
 
@@ -103,14 +102,14 @@ Prefer `pip`? `pip install git+https://github.com/chilli-garlic-momo/slowRoll` g
 | `slowroll plan rollout.yml` | Same as `apply --dry-run` |
 | `slowroll apply rollout.yml [--dry-run]` | Creates the segment, a disabled override and the issue if missing. Refuses if the flag is on in the environment default |
 | `slowroll tick rollout.yml [--dry-run]` | One decision step |
-| `slowroll loop rollout.yml --every 10s` | Runs `tick` forever. For demos |
+| `slowroll loop rollout.yml --every 10s` | Runs `tick` forever. Gives up after five failed ticks in a row. For demos |
 | `slowroll status rollout.yml` | Prints state and current percent |
 | `slowroll halt rollout.yml [--reason text]` | Override off, status halted |
 | `slowroll reset rollout.yml` | Override off, segment back to the first step, state idle |
 
 Exit codes: `0` success (a tick that halted is still a success), `2` invalid config, `1` anything else. Errors are one line on stderr, and a halt also prints a GitHub Actions `::warning::` line.
 
-After a rollout finishes, its issue is closed and later ticks say so and exit 0. To run the same flag again, use `reset` and then `apply`.
+When a rollout finishes, its issue is closed and later ticks say so and exit 0. To run the same flag again, use `reset` and then `apply`.
 
 ## Configuration
 
@@ -141,9 +140,9 @@ github:
 | `health.url` | Must start with `http://` or `https://` |
 | `health.fail_after` | Consecutive unhealthy ticks that halt the rollout. Default 2 |
 | `health.unknown_comment_every` | Post a comment on every Nth consecutive unknown tick. Default 6 |
-| `github.repo` | `owner/name`. Overrides `GITHUB_REPOSITORY` |
+| `github.repo` | `owner/name`. Overrides `GITHUB_REPOSITORY`. Leave it out in a template so each copy uses its own repo |
 
-Every validation error is reported at once, and unknown keys are an error. Environment variables: `FLAGSMITH_API_URL` (no trailing slash), `FLAGSMITH_API_KEY` (admin key, sent as `Authorization: Api-Key`), `GITHUB_TOKEN` (issues read and write) and `GITHUB_REPOSITORY`.
+Every validation error is reported at once, and unknown keys are an error. Environment variables: `FLAGSMITH_API_URL`, `FLAGSMITH_API_KEY` (admin key, sent as `Authorization: Api-Key`), `GITHUB_TOKEN` (issues read and write) and `GITHUB_REPOSITORY`. Leading and trailing whitespace in them is ignored.
 
 ## Health contract
 
@@ -169,6 +168,13 @@ Set `approval.before_step` and Slowroll stops before that step with status `wait
 
 Copy `examples/slowroll-workflow.yml` to `.github/workflows/slowroll.yml`, add the repository secrets `FLAGSMITH_API_URL` and `FLAGSMITH_API_KEY`, and commit a `rollout.yml`. The workflow runs on a schedule, on `workflow_dispatch`, and on `repository_dispatch` (`slowroll-tick` and `slowroll-halt`). Runs never overlap.
 
+Set the secrets so they carry no trailing newline:
+
+```bash
+printf '%s' "$FLAGSMITH_API_URL" | gh secret set FLAGSMITH_API_URL
+printf '%s' "$FLAGSMITH_API_KEY" | gh secret set FLAGSMITH_API_KEY
+```
+
 GitHub's cron is best effort and can run late, so use an external pinger such as cron-job.org that calls `workflow_dispatch` every five minutes. Give it a fine-grained token limited to your repo with only **Actions: Read and write**:
 
 ```bash
@@ -190,9 +196,34 @@ curl -X POST \
   -d '{"event_type":"slowroll-halt"}'
 ```
 
+## MCP server (optional)
+
+`slowroll-mcp` is a small [MCP](https://modelcontextprotocol.io) server over stdio with exactly three tools:
+
+| Tool | What it does |
+|---|---|
+| `rollout_plan` | Validates a rollout config, writes it to a new branch and opens a pull request. It never merges and never starts anything |
+| `rollout_status` | Reports status, step, percent and override |
+| `rollout_halt` | Turns the override off and marks the rollout halted |
+
+There is deliberately no approve tool, so an agent cannot pass the human gate. A planned rollout starts only after a person merges the pull request and runs `slowroll apply`.
+
+Install and register it (the server needs `FLAGSMITH_API_URL`, `FLAGSMITH_API_KEY`, `GITHUB_TOKEN` and `GITHUB_REPOSITORY` in its environment; `GITHUB_TOKEN` also needs Contents and Pull requests write for `rollout_plan`):
+
+```bash
+git clone https://github.com/chilli-garlic-momo/slowRoll && cd slowRoll
+uv venv && source .venv/bin/activate
+uv pip install -e '.[mcp]'
+claude mcp add --transport stdio slowroll -- /path/to/launcher.sh
+```
+
+where `launcher.sh` exports those variables and ends with `exec /path/to/slowRoll/.venv/bin/slowroll-mcp`, which keeps secrets out of the client's config. Any MCP client that can launch a stdio command works the same way.
+
+What has been tested: the server's tool list and error handling through automated tests, a real handshake with Claude Code's connection check, and a scripted MCP client (`scripts/mcp_demo.py`) that opened a real pull request. It has **not** been driven by an AI agent end to end.
+
 ## Demo
 
-`demo/` is a small Vercel app with simulated traffic. `/api/checkout` returns a control or treatment variant from Flagsmith, a chaos flag (`inject_errors`) makes treatment requests fail, and `/api/health` compares the two error rates using counters in Upstash Redis. `demo/loadgen.py` generates the traffic. **All demo traffic is simulated.**
+`demo/` is a small Vercel app with simulated traffic. `/api/checkout` returns a control or treatment variant from Flagsmith, a chaos flag (`inject_errors`) makes treatment requests fail, and `/api/health` compares the two error rates using counters in Upstash Redis. `demo/loadgen.py` generates the traffic. **All demo traffic is simulated.** `scripts/demo.sh` and [docs/DEMO.md](docs/DEMO.md) run the full sequence.
 
 The demo's health endpoint says `healthy: null` when treatment has between 1 and 9 requests in the window, and `true` when treatment has none yet but control has baseline traffic. Without that second rule a rollout could never leave its idle state, because treatment only gets traffic after the first step. The side effect is that a very short `soak` can advance a step before treatment traffic exists. Use a `soak` of at least a minute or two with real traffic.
 
@@ -201,9 +232,10 @@ The demo's health endpoint says `healthy: null` when treatment has between 1 and
 - **Experimental Flagsmith endpoints.** Slowroll uses `/api/__future__/environments/...`, which Flagsmith documents as experimental. They do not work when change requests are enabled, and they do not support identity overrides. Pin your Flagsmith image tag. Tested only against self-hosted 2.292.0. Flagsmith Cloud is untested.
 - **Boolean flags only.**
 - **One approval gate.**
-- **1 percent granularity.** Percentages are 1 to 100, even though one instance we tested also accepted 0.
+- **1 percent granularity.** Percentages are 1 to 100, even though the instance we tested also accepted 0.
 - **GitHub cron is best effort.** Use an external pinger.
 - **Tick resolution.** Decisions happen once per tick, so a `soak` shorter than your tick interval is effectively one tick.
+- **Tested with simulated traffic only.** The demo's health signal is a comparison of error rates. Production health endpoints are yours to define.
 - **GitHub API version header.** Slowroll sends `X-GitHub-Api-Version: 2022-11-28`, which GitHub currently marks deprecated with a sunset date in 2028.
 
 ## Troubleshooting
@@ -216,9 +248,11 @@ Start with `slowroll doctor rollout.yml`. It prints `ok` or `FAIL` per check.
 | `FAIL auth` with 401 or 403 | Wrong or revoked admin API key |
 | `FAIL project` | Wrong `project` id |
 | `FAIL feature id` | The flag name is wrong or it is in a different project |
+| `environment_not_found` | `environment` must be the client-side environment key |
 | `FAIL environment default` | The flag is on in the environment default. Turn it off, then `apply` |
 | `segment: missing` | Not an error. `apply` creates it |
 | `no open issue ...; run slowroll apply` | Nothing was applied yet |
+| `InvalidURL` or `InvalidHeader` | A stray newline in a secret. Set Actions secrets with `printf '%s'` |
 | `status comment has no state marker` | The first issue comment was edited by hand. Run `slowroll apply` |
 | GitHub error ending in `(needs: ...)` | Give the token or workflow exactly that permission |
 
