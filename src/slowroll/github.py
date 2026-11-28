@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import os
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -58,6 +60,28 @@ class GitHub:
 
     def close_issue(self, number: int) -> Any:
         return self.request("PATCH", f"/issues/{number}", {"state": "closed"})
+
+    def default_branch(self) -> str:
+        return self.request("GET", "")["default_branch"]
+
+    def branch_sha(self, branch: str) -> str:
+        return self.request("GET", f"/git/ref/heads/{quote(branch)}")["object"]["sha"]
+
+    def create_branch(self, name: str, sha: str) -> Any:
+        return self.request("POST", "/git/refs", {"ref": f"refs/heads/{name}", "sha": sha})
+
+    def file_sha(self, path: str, ref: str) -> str | None:
+        data = self.request("GET", f"/contents/{quote(path)}?ref={quote(ref)}", allow=(404,))
+        return data.get("sha") if isinstance(data, dict) else None
+
+    def put_file(self, path: str, text: str, message: str, branch: str, sha: str | None = None) -> Any:
+        body = {"message": message, "content": base64.b64encode(text.encode()).decode(), "branch": branch}
+        if sha:
+            body["sha"] = sha
+        return self.request("PUT", f"/contents/{quote(path)}", body)
+
+    def create_pull(self, title: str, head: str, base: str, body: str) -> dict[str, Any]:
+        return self.request("POST", "/pulls", {"title": title, "head": head, "base": base, "body": body})
 
     def approved(self, number: int) -> bool:
         actor = None

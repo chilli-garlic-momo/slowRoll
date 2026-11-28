@@ -16,6 +16,7 @@ mcp = ["mcp"]
 
 [project.scripts]
 slowroll = "slowroll.cli:main"
+slowroll-mcp = "slowroll.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
