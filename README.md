@@ -35,9 +35,22 @@ your health URL
 
 The flag stays off in the environment default. A segment named `slowroll:<flag>` holds one `% Split` rule, and a segment override turns the flag on for that segment. Ramping raises the percentage. Halting turns the override off.
 
+## How Slowroll uses Flagsmith
+
+Everything Slowroll controls lives in Flagsmith, self-hosted and open source:
+
+- **Segments and the `% Split` rule.** The rollout is a segment named `slowroll:<flag>` with one `% Split` rule. Ramping raises the percentage, so Flagsmith's own identity hashing decides who is in.
+- **Segment overrides.** A segment override turns the flag on for that segment only. The flag stays off in the environment default. Halting turns the override off. This uses `/api/__future__/environments/...`, which Flagsmith marks experimental (see [Limitations](#limitations)).
+- **The Admin API.** An organisation Admin API key looks up the project, features and segments, and creates what is missing. Nothing needs the dashboard once the key exists.
+- **Identities and variants.** The demo app asks Flagsmith's identities endpoint (with the client-side environment key) which variant a user gets, and reads a second flag, `inject_errors`, to make treatment requests fail on purpose.
+
+Slowroll does not use Flagsmith Experimentation or the Flagsmith SDKs. It fills a different gap: a gradual, health-gated rollout with an audit trail on a self-hosted instance.
+
 ## Quickstart
 
 You need a running Flagsmith (tested on self-hosted 2.292.0, see [deploy-render.md](docs/deploy-render.md)), Python 3.11+ with [uv](https://docs.astral.sh/uv/), and a GitHub repo you can write issues to. It should take about five minutes.
+
+No cloud accounts? [docs/LOCAL.md](docs/LOCAL.md) runs Flagsmith in Docker (`docker-compose.yml`), the demo app and the controller on your own machine, with GitHub as the only outside service.
 
 **1. In Flagsmith**
 
@@ -221,9 +234,11 @@ where `launcher.sh` exports those variables and ends with `exec /path/to/slowRol
 
 What has been tested: the server's tool list and error handling through automated tests, a real handshake with Claude Code's connection check, and a scripted MCP client (`scripts/mcp_demo.py`) that opened a real pull request. It has **not** been driven by an AI agent end to end.
 
+`scripts/agent_demo.py` is a small agent loop for doing that with any OpenAI-compatible chat API that supports tool calling, including free tiers and local models, so you do not need a paid coding assistant. Its automated tests run the loop against this repo's real tool schemas and a real stdio MCP server, with a scripted stand-in for the model. See [docs/LOCAL.md](docs/LOCAL.md#8-let-an-ai-model-drive-the-mcp-server-optional).
+
 ## Demo
 
-`demo/` is a small Vercel app with simulated traffic. `/api/checkout` returns a control or treatment variant from Flagsmith, a chaos flag (`inject_errors`) makes treatment requests fail, and `/api/health` compares the two error rates using counters in Upstash Redis. `demo/loadgen.py` generates the traffic. **All demo traffic is simulated.** `scripts/demo.sh` and [docs/DEMO.md](docs/DEMO.md) run the full sequence.
+`demo/` is a small Vercel app with simulated traffic. `/api/checkout` returns a control or treatment variant from Flagsmith, a chaos flag (`inject_errors`) makes treatment requests fail, and `/api/health` compares the two error rates using counters in Upstash Redis. `demo/loadgen.py` generates the traffic. **All demo traffic is simulated.** `scripts/demo.sh` and [docs/DEMO.md](docs/DEMO.md) run the full sequence. `demo/local_demo.py` is a standard-library stand-in for the Vercel and Upstash app (same routes, same health rule, counters in memory) so the demo also runs with no cloud accounts; see [docs/LOCAL.md](docs/LOCAL.md).
 
 The demo's health endpoint says `healthy: null` when treatment has between 1 and 9 requests in the window, and `true` when treatment has none yet but control has baseline traffic. Without that second rule a rollout could never leave its idle state, because treatment only gets traffic after the first step. The side effect is that a very short `soak` can advance a step before treatment traffic exists. Use a `soak` of at least a minute or two with real traffic.
 
@@ -259,7 +274,7 @@ Start with `slowroll doctor rollout.yml`. It prints `ok` or `FAIL` per check.
 ## Development
 
 ```bash
-pip install -e '.[dev]'
+pip install -e '.[dev,mcp]'
 python -m pytest
 ```
 

@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 
 URL="${DEMO_URL:-https://slowroll-demo.vercel.app}"
 CFG=/tmp/slowroll-demo.yml
+ROLLOUT_FILE="${ROLLOUT_FILE:-rollout.yml}"
 RPS="${RPS:-4}"
 USERS="${USERS:-40}"
 RAMP_SECONDS="${RAMP_SECONDS:-90}"
@@ -11,8 +12,8 @@ HALT_SECONDS="${HALT_SECONDS:-40}"
 GATE_SECONDS="${GATE_SECONDS:-90}"
 FINISH_SECONDS="${FINISH_SECONDS:-60}"
 
-if [ ! -s rollout.yml ]; then
-  echo "rollout.yml is missing or empty in $(pwd). Restore it with: git checkout -- rollout.yml" >&2
+if [ ! -s "$ROLLOUT_FILE" ]; then
+  echo "$ROLLOUT_FILE is missing or empty in $(pwd). Restore it with: git checkout -- rollout.yml (or run scripts/local_setup.py for a local one)" >&2
   exit 2
 fi
 
@@ -53,7 +54,7 @@ for _ in 1 2 3; do
   sleep 1
 done
 
-sed -e 's/^soak:.*/soak: 15s/' -e "s#^  url: .*#  url: $URL/api/health#" rollout.yml > "$CFG"
+sed -e 's/^soak:.*/soak: 15s/' -e "s#^  url: .*#  url: $URL/api/health#" "$ROLLOUT_FILE" > "$CFG"
 echo "demo config:"; cat "$CFG"
 
 fresh || exit 1

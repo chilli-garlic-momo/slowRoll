@@ -1,0 +1,1490 @@
+From 0701b6bddebe2f7a4e890febcb077a75633fe4a8 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 29 Nov 2026 00:14:07 +0530
+Subject: [PATCH] Add a no-accounts local setup, a free-model agent driver and
+ CI coverage for MCP
+
+- docker-compose.yml: self-hosted Flagsmith 2.292.0 plus Postgres
+- demo/local_demo.py: standard-library stand-in for the Vercel and Upstash demo app
+- scripts/local_setup.py: creates the demo flags and writes rollout.local.yml
+- scripts/agent_demo.py: agent loop over any OpenAI-compatible API driving slowroll-mcp
+- docs/LOCAL.md and README: local guide, "How Slowroll uses Flagsmith", agent driver
+- scripts/demo.sh: ROLLOUT_FILE override
+- CI: install the mcp extra so the MCP tests run instead of being skipped
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01HgCgRWedsrSoirycQKoKQp
+---
+ .github/workflows/ci.yml  |   2 +-
+ .gitignore                |   2 +
+ README.md                 |  19 ++-
+ demo/local_demo.py        | 195 ++++++++++++++++++++++++++
+ docker-compose.yml        |  39 ++++++
+ docs/LOCAL.md             | 104 ++++++++++++++
+ scripts/agent_demo.py     | 224 ++++++++++++++++++++++++++++++
+ scripts/demo.sh           |   7 +-
+ scripts/local_setup.py    | 117 ++++++++++++++++
+ tests/test_agent_demo.py  | 281 ++++++++++++++++++++++++++++++++++++++
+ tests/test_local_demo.py  | 217 +++++++++++++++++++++++++++++
+ tests/test_local_setup.py | 120 ++++++++++++++++
+ 12 files changed, 1321 insertions(+), 6 deletions(-)
+ create mode 100644 demo/local_demo.py
+ create mode 100644 docker-compose.yml
+ create mode 100644 docs/LOCAL.md
+ create mode 100644 scripts/agent_demo.py
+ create mode 100644 scripts/local_setup.py
+ create mode 100644 tests/test_agent_demo.py
+ create mode 100644 tests/test_local_demo.py
+ create mode 100644 tests/test_local_setup.py
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index fd5f819..6a9bee8 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -8,5 +8,5 @@ jobs:
+       - uses: actions/setup-python@v5
+         with:
+           python-version: "3.12"
+-      - run: pip install -e '.[dev]'
++      - run: pip install -e '.[dev,mcp]'
+       - run: pytest
+diff --git a/.gitignore b/.gitignore
+index 3bc5831..28a099d 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -7,3 +7,5 @@ build/
+ dist/
+ node_modules/
+ .vercel/
++rollout.local.yml
++agent-run.md
+diff --git a/README.md b/README.md
+index 2018338..9d569b9 100644
+--- a/README.md
++++ b/README.md
+@@ -35,10 +35,23 @@ your health URL
+ 
+ The flag stays off in the environment default. A segment named `slowroll:<flag>` holds one `% Split` rule, and a segment override turns the flag on for that segment. Ramping raises the percentage. Halting turns the override off.
+ 
++## How Slowroll uses Flagsmith
++
++Everything Slowroll controls lives in Flagsmith, self-hosted and open source:
++
++- **Segments and the `% Split` rule.** The rollout is a segment named `slowroll:<flag>` with one `% Split` rule. Ramping raises the percentage, so Flagsmith's own identity hashing decides who is in.
++- **Segment overrides.** A segment override turns the flag on for that segment only. The flag stays off in the environment default. Halting turns the override off. This uses `/api/__future__/environments/...`, which Flagsmith marks experimental (see [Limitations](#limitations)).
++- **The Admin API.** An organisation Admin API key looks up the project, features and segments, and creates what is missing. Nothing needs the dashboard once the key exists.
++- **Identities and variants.** The demo app asks Flagsmith's identities endpoint (with the client-side environment key) which variant a user gets, and reads a second flag, `inject_errors`, to make treatment requests fail on purpose.
++
++Slowroll does not use Flagsmith Experimentation or the Flagsmith SDKs. It fills a different gap: a gradual, health-gated rollout with an audit trail on a self-hosted instance.
++
+ ## Quickstart
+ 
+ You need a running Flagsmith (tested on self-hosted 2.292.0, see [deploy-render.md](docs/deploy-render.md)), Python 3.11+ with [uv](https://docs.astral.sh/uv/), and a GitHub repo you can write issues to. It should take about five minutes.
+ 
++No cloud accounts? [docs/LOCAL.md](docs/LOCAL.md) runs Flagsmith in Docker (`docker-compose.yml`), the demo app and the controller on your own machine, with GitHub as the only outside service.
++
+ **1. In Flagsmith**
+ 
+ - Create a boolean flag, for example `quickstart_demo`, and leave it **off** in your environment.
+@@ -221,9 +234,11 @@ where `launcher.sh` exports those variables and ends with `exec /path/to/slowRol
+ 
+ What has been tested: the server's tool list and error handling through automated tests, a real handshake with Claude Code's connection check, and a scripted MCP client (`scripts/mcp_demo.py`) that opened a real pull request. It has **not** been driven by an AI agent end to end.
+ 
++`scripts/agent_demo.py` is a small agent loop for doing that with any OpenAI-compatible chat API that supports tool calling, including free tiers and local models, so you do not need a paid coding assistant. Its automated tests run the loop against this repo's real tool schemas and a real stdio MCP server, with a scripted stand-in for the model. See [docs/LOCAL.md](docs/LOCAL.md#8-let-an-ai-model-drive-the-mcp-server-optional).
++
+ ## Demo
+ 
+-`demo/` is a small Vercel app with simulated traffic. `/api/checkout` returns a control or treatment variant from Flagsmith, a chaos flag (`inject_errors`) makes treatment requests fail, and `/api/health` compares the two error rates using counters in Upstash Redis. `demo/loadgen.py` generates the traffic. **All demo traffic is simulated.** `scripts/demo.sh` and [docs/DEMO.md](docs/DEMO.md) run the full sequence.
++`demo/` is a small Vercel app with simulated traffic. `/api/checkout` returns a control or treatment variant from Flagsmith, a chaos flag (`inject_errors`) makes treatment requests fail, and `/api/health` compares the two error rates using counters in Upstash Redis. `demo/loadgen.py` generates the traffic. **All demo traffic is simulated.** `scripts/demo.sh` and [docs/DEMO.md](docs/DEMO.md) run the full sequence. `demo/local_demo.py` is a standard-library stand-in for the Vercel and Upstash app (same routes, same health rule, counters in memory) so the demo also runs with no cloud accounts; see [docs/LOCAL.md](docs/LOCAL.md).
+ 
+ The demo's health endpoint says `healthy: null` when treatment has between 1 and 9 requests in the window, and `true` when treatment has none yet but control has baseline traffic. Without that second rule a rollout could never leave its idle state, because treatment only gets traffic after the first step. The side effect is that a very short `soak` can advance a step before treatment traffic exists. Use a `soak` of at least a minute or two with real traffic.
+ 
+@@ -259,7 +274,7 @@ Start with `slowroll doctor rollout.yml`. It prints `ok` or `FAIL` per check.
+ ## Development
+ 
+ ```bash
+-pip install -e '.[dev]'
++pip install -e '.[dev,mcp]'
+ python -m pytest
+ ```
+ 
+diff --git a/demo/local_demo.py b/demo/local_demo.py
+new file mode 100644
+index 0000000..c3cf811
+--- /dev/null
++++ b/demo/local_demo.py
+@@ -0,0 +1,195 @@
++"""Local stand-in for the Vercel + Upstash demo app, so the demo runs with no cloud accounts.
++
++It mirrors demo/api/checkout.js and demo/api/health.js: the same routes, the same flag lookup through
++Flagsmith's identities endpoint, the same 10 second buckets and the same health rule. Counters live in
++memory, so restarting it resets them. Standard library only.
++
++    export FLAGSMITH_API_URL=http://localhost:8000
++    export FLAGSMITH_ENVIRONMENT_KEY=<client-side environment key>
++    python demo/local_demo.py            # serves http://127.0.0.1:8080
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import threading
++import time
++import urllib.request
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from pathlib import Path
++from typing import Any, Callable
++from urllib.parse import parse_qs, urlparse
++
++BUCKET_SECONDS = 10
++KEEP_SECONDS = 180
++CACHE_SECONDS = 10
++INDEX = Path(__file__).with_name("index.html")
++
++
++class Counters:
++    """Request and error counts per variant in 10 second buckets, like the Redis keys in checkout.js."""
++
++    def __init__(self, clock: Callable[[], float] = time.time):
++        self.clock = clock
++        self.lock = threading.Lock()
++        self.data: dict[tuple[str, str, int], int] = {}
++
++    def bucket(self) -> int:
++        return int(self.clock() // BUCKET_SECONDS)
++
++    def add(self, variant: str, failed: bool) -> None:
++        now = self.bucket()
++        with self.lock:
++            for kind in (("req", "err") if failed else ("req",)):
++                key = (variant, kind, now)
++                self.data[key] = self.data.get(key, 0) + 1
++            oldest = now - KEEP_SECONDS // BUCKET_SECONDS
++            for key in [k for k in self.data if k[2] < oldest]:
++                del self.data[key]
++
++    def window(self, seconds: int) -> dict[str, dict[str, int]]:
++        buckets = max(1, round(seconds / BUCKET_SECONDS))
++        now = self.bucket()
++        with self.lock:
++            return {
++                variant: {kind: sum(self.data.get((variant, kind, now - i), 0) for i in range(buckets)) for kind in ("req", "err")}
++                for variant in ("control", "treatment")
++            }
++
++
++def health_payload(counts: dict[str, dict[str, int]], window: int, min_samples: int, max_err_delta: float) -> dict[str, Any]:
++    def rate(c: dict[str, int]) -> float:
++        return c["err"] / c["req"] if c["req"] else 0.0
++
++    def pct(c: dict[str, int]) -> str:
++        return f"{c['err']}/{c['req']} ({rate(c) * 100:.1f}%)"
++
++    control, treatment = counts["control"], counts["treatment"]
++    healthy: bool | None = None
++    detail = f"treatment has {treatment['req']} requests in the last {window}s, fewer than {min_samples}"
++    if treatment["req"] >= min_samples:
++        healthy = not (rate(treatment) - rate(control) > max_err_delta)
++        detail = f"treatment errors {pct(treatment)} vs control {pct(control)} over {window}s"
++    elif treatment["req"] == 0 and control["req"] >= min_samples:
++        healthy = True
++        detail = f"no treatment traffic yet and control has {control['req']} requests in the last {window}s; nothing to compare"
++    return {"healthy": healthy, "detail": detail, "counts": counts, "window_seconds": window}
++
++
++def identity_flags(api_url: str, env_key: str, uid: str) -> dict[str, bool]:
++    req = urllib.request.Request(
++        api_url.rstrip("/") + "/api/v1/identities/",
++        data=json.dumps({"identifier": uid, "traits": []}).encode(),
++        headers={"X-Environment-Key": env_key, "Content-Type": "application/json"},
++        method="POST",
++    )
++    with urllib.request.urlopen(req, timeout=5) as resp:
++        data = json.loads(resp.read())
++    return {f["feature"]["name"]: f["enabled"] for f in data["flags"]}
++
++
++def make_server(
++    host: str = "127.0.0.1",
++    port: int = 8080,
++    *,
++    fetch_flags: Callable[[str], dict[str, bool]],
++    flag: str = "new_checkout",
++    chaos_flag: str = "inject_errors",
++    window: int = 60,
++    min_samples: int = 10,
++    max_err_delta: float = 0.05,
++    clock: Callable[[], float] = time.time,
++) -> ThreadingHTTPServer:
++    counters = Counters(clock)
++    cache: dict[str, tuple[float, dict[str, bool]]] = {}
++    cache_lock = threading.Lock()
++
++    def flags_for(uid: str) -> dict[str, bool]:
++        with cache_lock:
++            hit = cache.get(uid)
++        if hit and clock() - hit[0] < CACHE_SECONDS:
++            return hit[1]
++        flags = fetch_flags(uid)
++        with cache_lock:
++            if len(cache) > 2000:
++                cache.clear()
++            cache[uid] = (clock(), flags)
++        return flags
++
++    class Handler(BaseHTTPRequestHandler):
++        def send_json(self, status: int, body: dict[str, Any], no_store: bool = False) -> None:
++            raw = json.dumps(body, separators=(",", ":")).encode()
++            self.send_response(status)
++            self.send_header("Content-Type", "application/json")
++            self.send_header("Content-Length", str(len(raw)))
++            if no_store:
++                self.send_header("Cache-Control", "no-store")
++            self.end_headers()
++            self.wfile.write(raw)
++
++        def do_GET(self) -> None:
++            url = urlparse(self.path)
++            if url.path == "/api/checkout":
++                return self.checkout(parse_qs(url.query))
++            if url.path == "/api/health":
++                counts = counters.window(window)
++                return self.send_json(200, health_payload(counts, window, min_samples, max_err_delta), no_store=True)
++            if url.path in ("/", "/index.html") and INDEX.exists():
++                raw = INDEX.read_bytes()
++                self.send_response(200)
++                self.send_header("Content-Type", "text/html; charset=utf-8")
++                self.send_header("Content-Length", str(len(raw)))
++                self.end_headers()
++                self.wfile.write(raw)
++                return
++            self.send_json(404, {"error": "not found"})
++
++        def checkout(self, query: dict[str, list[str]]) -> None:
++            uid = (query.get("uid") or ["anonymous"])[0][:64]
++            try:
++                flags = flags_for(uid)
++            except Exception:
++                return self.send_json(200, {"uid": uid, "variant": "control", "ok": True, "degraded": True})
++            variant = "treatment" if flags.get(flag) else "control"
++            failed = variant == "treatment" and flags.get(chaos_flag) is True
++            counters.add(variant, failed)
++            self.send_json(500 if failed else 200, {"uid": uid, "variant": variant, "ok": not failed})
++
++        def log_message(self, *args: Any) -> None:
++            pass
++
++    return ThreadingHTTPServer((host, port), Handler)
++
++
++def main() -> None:
++    p = argparse.ArgumentParser(description="Local Slowroll demo app (replaces the Vercel and Upstash deployment)")
++    p.add_argument("--host", default="127.0.0.1")
++    p.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8080")))
++    args = p.parse_args()
++
++    api_url = (os.environ.get("FLAGSMITH_API_URL") or "").strip()
++    env_key = (os.environ.get("FLAGSMITH_ENVIRONMENT_KEY") or "").strip()
++    if not api_url or not env_key:
++        raise SystemExit("set FLAGSMITH_API_URL and FLAGSMITH_ENVIRONMENT_KEY (the client-side environment key)")
++
++    server = make_server(
++        args.host,
++        args.port,
++        fetch_flags=lambda uid: identity_flags(api_url, env_key, uid),
++        flag=os.environ.get("FLAG_NAME", "new_checkout"),
++        chaos_flag=os.environ.get("CHAOS_FLAG", "inject_errors"),
++        window=int(os.environ.get("WINDOW_SECONDS", "60")),
++        min_samples=int(os.environ.get("MIN_SAMPLES", "10")),
++        max_err_delta=float(os.environ.get("MAX_ERR_DELTA", "0.05")),
++    )
++    print(f"local demo on http://{args.host}:{args.port} using Flagsmith at {api_url}", flush=True)
++    try:
++        server.serve_forever()
++    except KeyboardInterrupt:
++        pass
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/docker-compose.yml b/docker-compose.yml
+new file mode 100644
+index 0000000..dfcc0be
+--- /dev/null
++++ b/docker-compose.yml
+@@ -0,0 +1,39 @@
++# Local self-hosted Flagsmith for trying Slowroll. See docs/LOCAL.md.
++#
++# The image tag is pinned on purpose: Slowroll uses Flagsmith endpoints that are marked experimental,
++# and it is tested against 2.292.0 only. Do not switch to `latest`.
++#
++#   docker compose up -d
++#   open http://localhost:8000 and create the admin account on the welcome screen
++services:
++  db:
++    image: postgres:16-alpine
++    environment:
++      POSTGRES_USER: flagsmith
++      POSTGRES_PASSWORD: flagsmith
++      POSTGRES_DB: flagsmith
++    volumes:
++      - db-data:/var/lib/postgresql/data
++    healthcheck:
++      test: ["CMD-SHELL", "pg_isready -U flagsmith -d flagsmith"]
++      interval: 5s
++      timeout: 5s
++      retries: 12
++
++  flagsmith:
++    image: flagsmith/flagsmith:2.292.0
++    depends_on:
++      db:
++        condition: service_healthy
++    environment:
++      DATABASE_URL: postgresql://flagsmith:flagsmith@db:5432/flagsmith
++      DJANGO_ALLOWED_HOSTS: "*"
++      # Local use only. Set your own value if this ever leaves your machine.
++      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-local-demo-only-change-me-if-this-is-ever-exposed}
++      # Needed on 2.29x to start the metrics module (see docs/deploy-render.md, Things that went wrong).
++      PROMETHEUS_MULTIPROC_DIR: /tmp
++    ports:
++      - "${FLAGSMITH_PORT:-8000}:8000"
++
++volumes:
++  db-data:
+diff --git a/docs/LOCAL.md b/docs/LOCAL.md
+new file mode 100644
+index 0000000..b02171d
+--- /dev/null
++++ b/docs/LOCAL.md
+@@ -0,0 +1,104 @@
++# Run Slowroll locally
++
++This runs the whole demo on your machine: self-hosted Flagsmith in Docker, a local stand-in for the demo app, and the real Slowroll controller. The only outside service is GitHub, because Slowroll keeps its status and audit trail in a GitHub issue.
++
++You need Docker with Compose, Python 3.11 or newer, and a GitHub repository you can write to (a throwaway one is fine). Allow about 15 minutes.
++
++`docker-compose.yml` pins Flagsmith 2.292.0, the version Slowroll is tested against. Slowroll uses endpoints Flagsmith marks experimental, so do not switch it to `latest`.
++
++## 1. Start Flagsmith
++
++```bash
++docker compose up -d
++curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8000/health/liveness/
++```
++
++The first start runs migrations and can take a minute or two. Repeat the `curl` until it prints `200`. If port 8000 is taken, run `FLAGSMITH_PORT=8001 docker compose up -d` and use that port everywhere below.
++
++## 2. Create the admin account, the project and an API key
++
++1. Open http://localhost:8000. On a fresh instance you get a welcome screen. Choose **Get Started**, enter your name, email and a password, then name the organisation.
++2. Create a project (open-source Flagsmith allows one). Any name works.
++3. Open **Organisation Settings**, then **API Keys**, create an **Admin API key** and copy it.
++
++## 3. Install Slowroll
++
++```bash
++uv venv && source .venv/bin/activate
++uv pip install -e '.[mcp]'        # or: python -m venv .venv && . .venv/bin/activate && pip install -e '.[mcp]'
++```
++
++## 4. Set your credentials
++
++Put these in `.env.local` (it is git-ignored) or export them in your shell:
++
++```bash
++export FLAGSMITH_API_URL=http://localhost:8000
++export FLAGSMITH_API_KEY=<the admin API key from step 2>
++export GITHUB_TOKEN=<fine-grained token: Issues read and write on your repo>
++export GITHUB_REPOSITORY=your-name/your-repo
++```
++
++If you use `.env.local`, load it with `set -a; . ./.env.local; set +a`. The MCP and agent steps below also need the token to have Contents and Pull requests write.
++
++## 5. Create the flags and the rollout config
++
++```bash
++python scripts/local_setup.py --github-repo "$GITHUB_REPOSITORY"
++```
++
++This finds your project, creates `new_checkout` and `inject_errors` if they are missing (both off, never switched on), reads the Development environment's client-side key and writes `rollout.local.yml`. It prints the next commands. Run the `export FLAGSMITH_ENVIRONMENT_KEY=...` line it shows.
++
++## 6. Start the local demo app and check everything
++
++```bash
++python demo/local_demo.py &
++curl -s http://127.0.0.1:8080/api/health        # {"healthy":null,...} until traffic arrives
++slowroll doctor rollout.local.yml               # each check prints ok or FAIL; "segment: missing" is fine, apply creates it
++```
++
++The app mirrors the Vercel demo: `/api/checkout?uid=...` returns a control or treatment variant from Flagsmith, the `inject_errors` flag makes treatment requests fail, and `/api/health` compares the two error rates. Counters live in memory. Open http://127.0.0.1:8080 to see it. All traffic is simulated.
++
++## 7. Run the full scripted demo
++
++```bash
++ROLLOUT_FILE=rollout.local.yml DEMO_URL=http://127.0.0.1:8080 ./scripts/demo.sh
++```
++
++It applies the config, starts simulated load, ramps the flag, pauses so you can switch `inject_errors` on in the Flagsmith dashboard (Slowroll then reverts on its own), and pauses again at the approval gate so you can add the `slowroll/approve` label to the GitHub issue. See [DEMO.md](DEMO.md) for what each pause is for.
++
++To try it by hand instead: `slowroll apply rollout.local.yml`, then `slowroll loop rollout.local.yml --every 10s`, with `python demo/loadgen.py --url http://127.0.0.1:8080 --rps 4 --users 40` running in another terminal.
++
++## 8. Let an AI model drive the MCP server (optional)
++
++`scripts/agent_demo.py` is a small agent loop. It starts `slowroll-mcp`, offers its three tools to a model and runs the calls the model makes. It works with any provider that offers an OpenAI-compatible chat API with tool calling, including free tiers and local models. Check your provider's documentation for the exact base URL and for a model that supports tool calling.
++
++```bash
++export LLM_BASE_URL=<your provider's OpenAI-compatible base URL>   # for example http://localhost:11434/v1 for Ollama
++export LLM_API_KEY=<your key>                                       # for Ollama any non-empty text
++export LLM_MODEL=<a model that supports tool calling>
++slowroll apply rollout.local.yml        # so the status tool finds an open issue
++python scripts/agent_demo.py --config rollout.local.yml --log agent-run.md
++```
++
++The model can plan a rollout (this opens a real branch and pull request in `GITHUB_REPOSITORY`), read its status and halt it. It has no approve tool. A person still merges the pull request, runs `slowroll apply` and adds the approval label. Close the pull request afterwards if you were only trying it. The transcript goes to `agent-run.md`.
++
++## Clean up
++
++```bash
++slowroll reset rollout.local.yml   # first, while Flagsmith is still up: override off, rollout back to idle
++pkill -f demo/local_demo.py
++docker compose down -v             # -v also deletes the Flagsmith database
++```
++
++## Troubleshooting
++
++| Symptom | Likely cause and fix |
++|---|---|
++| `curl` to `/health/liveness/` never returns 200 | Wait a little longer on first start, then read `docker compose logs flagsmith`. |
++| `local_setup.py`: `this key sees no projects` | Create the project in the dashboard first (step 2). |
++| `local_setup.py`: `environment 'Development' not found` | Pass the name of an environment you have: `--environment Production`. |
++| `slowroll doctor` says `FAIL environment default` | The flag is on in the environment. Turn it off in the dashboard, then run `apply`. |
++| The demo page shows `degraded` | The app cannot reach Flagsmith. Check `FLAGSMITH_API_URL` and `FLAGSMITH_ENVIRONMENT_KEY`, which must be the client-side key. |
++| `agent_demo.py` says HTTP 400 or 404 | The base URL or model name is wrong for your provider, or the model does not support tool calling. |
++| `agent_demo.py` says HTTP 429 | A free tier is rate limiting you. The script retries a few times; wait a minute and run it again. |
+diff --git a/scripts/agent_demo.py b/scripts/agent_demo.py
+new file mode 100644
+index 0000000..b66af99
+--- /dev/null
++++ b/scripts/agent_demo.py
+@@ -0,0 +1,224 @@
++"""Let an AI model drive the Slowroll MCP server, using any OpenAI-compatible chat API.
++
++This is a small agent loop: it starts `slowroll-mcp` over stdio, offers the server's three tools to a
++model, runs the tool calls the model makes and feeds the results back. It works with any provider that
++speaks the OpenAI chat-completions format with tool calling, including free tiers (Google AI Studio,
++Groq, OpenRouter) and local models (Ollama). You choose the provider and model; nothing here is tied to one.
++
++    export LLM_BASE_URL=...   # e.g. https://api.groq.com/openai/v1 or http://localhost:11434/v1
++    export LLM_API_KEY=...    # for Ollama any non-empty text works
++    export LLM_MODEL=...      # a model your provider lists as supporting tool calling
++    python scripts/agent_demo.py --config rollout.local.yml --log agent-run.md
++
++The model can only plan (open a pull request), read status and halt. There is no approve tool, so a
++person still has to merge the pull request, run `slowroll apply` and add the approval label.
++`rollout_plan` opens a real branch and pull request in GITHUB_REPOSITORY: close it afterwards.
++"""
++
++from __future__ import annotations
++
++import argparse
++import asyncio
++import json
++import os
++import sys
++import time
++from pathlib import Path
++from typing import Any, Callable
++
++import requests
++
++SYSTEM = (
++    "You operate Slowroll, a progressive rollout controller, through the tools you are given. "
++    "You can propose a rollout as a pull request (rollout_plan), read its status (rollout_status) and halt it (rollout_halt). "
++    "You cannot approve or start a rollout: a person merges the pull request, applies it and approves gated steps. "
++    "Use exactly the configuration the user gives you and do not invent values. Never claim to have done something no tool did. "
++    "When you are done, reply in at most three sentences: what you did, and what a person must do next."
++)
++
++PASS_THROUGH_ENV = ("FLAGSMITH_API_URL", "FLAGSMITH_API_KEY", "GITHUB_TOKEN", "GITHUB_REPOSITORY")
++STRIP_KEYS = {"title", "default", "additionalProperties", "$schema"}
++RETRY_STATUSES = {429, 500, 502, 503, 504}
++RETRY_WAITS = (3, 10, 30)
++
++
++def simplify_schema(schema: Any) -> Any:
++    """Drop JSON Schema keywords that several OpenAI-compatible providers reject, and unwrap Optional[...]."""
++    if isinstance(schema, list):
++        return [simplify_schema(s) for s in schema]
++    if not isinstance(schema, dict):
++        return schema
++    for key in ("anyOf", "oneOf"):
++        options = schema.get(key)
++        if isinstance(options, list):
++            real = [o for o in options if not (isinstance(o, dict) and o.get("type") == "null")]
++            if len(real) == 1:
++                merged = {**{k: v for k, v in schema.items() if k != key}, **real[0]}
++                return simplify_schema(merged)
++    return {k: simplify_schema(v) for k, v in schema.items() if k not in STRIP_KEYS}
++
++
++def field(obj: Any, *names: str) -> Any:
++    """The MCP SDK renamed camelCase fields to snake_case in 2.x (inputSchema -> input_schema, isError -> is_error)."""
++    for name in names:
++        value = getattr(obj, name, None)
++        if value is not None:
++            return value
++    return None
++
++
++def openai_tools(mcp_tools: list[Any]) -> list[dict[str, Any]]:
++    return [
++        {
++            "type": "function",
++            "function": {
++                "name": t.name,
++                "description": (t.description or "").strip(),
++                "parameters": simplify_schema(field(t, "input_schema", "inputSchema") or {"type": "object", "properties": {}}),
++            },
++        }
++        for t in mcp_tools
++    ]
++
++
++def chat(
++    base_url: str,
++    api_key: str,
++    model: str,
++    messages: list[dict[str, Any]],
++    tools: list[dict[str, Any]],
++    sleep: Callable[[float], None] = time.sleep,
++    post: Callable[..., Any] = requests.post,
++) -> dict[str, Any]:
++    """One chat-completions call. Free tiers rate-limit hard, so retry 429 and 5xx with a short backoff."""
++    for attempt in range(len(RETRY_WAITS) + 1):
++        resp = post(
++            base_url.rstrip("/") + "/chat/completions",
++            headers={"Authorization": f"Bearer {api_key}"},
++            json={"model": model, "messages": messages, "tools": tools, "temperature": 0},
++            timeout=120,
++        )
++        if resp.status_code in RETRY_STATUSES and attempt < len(RETRY_WAITS):
++            wait = RETRY_WAITS[attempt]
++            retry_after = getattr(resp, "headers", {}).get("Retry-After", "")
++            if str(retry_after).isdigit():
++                wait = max(wait, min(int(retry_after), 60))
++            sleep(wait)
++            continue
++        if resp.status_code >= 400:
++            raise SystemExit(f"the model API answered HTTP {resp.status_code}: {resp.text[:300]}")
++        try:
++            return resp.json()["choices"][0]["message"]
++        except (KeyError, IndexError, ValueError):
++            raise SystemExit(f"unexpected reply from the model API: {resp.text[:300]}") from None
++    raise SystemExit("unreachable")
++
++
++def server_env() -> dict[str, str]:
++    """Give the MCP server only what it needs, never the model API key."""
++    from mcp.client.stdio import get_default_environment
++
++    env = dict(get_default_environment())
++    env.update({k: os.environ[k] for k in PASS_THROUGH_ENV if os.environ.get(k)})
++    return env
++
++
++async def run_agent(
++    server_command: list[str],
++    base_url: str,
++    api_key: str,
++    model: str,
++    task: str,
++    max_steps: int = 8,
++    log: Callable[[str], None] = lambda s: None,
++    env: dict[str, str] | None = None,
++) -> str:
++    from mcp import ClientSession, StdioServerParameters
++    from mcp.client.stdio import stdio_client
++
++    def say(text: str) -> None:
++        print(text, flush=True)
++        log(text)
++
++    params = StdioServerParameters(command=server_command[0], args=server_command[1:], env=env if env is not None else server_env())
++    async with stdio_client(params) as (read, write):
++        async with ClientSession(read, write) as session:
++            await session.initialize()
++            mcp_tools = (await session.list_tools()).tools
++            tools = openai_tools(mcp_tools)
++            say("tools offered: " + ", ".join(t.name for t in mcp_tools))
++            messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": task}]
++            for step in range(1, max_steps + 1):
++                message = await asyncio.to_thread(chat, base_url, api_key, model, messages, tools)
++                calls = message.get("tool_calls") or []
++                messages.append({k: v for k, v in message.items() if v is not None})
++                if not calls:
++                    final = (message.get("content") or "").strip()
++                    say(f"\nagent: {final}")
++                    return final
++                for n, call in enumerate(calls):
++                    fn = call.get("function", {})
++                    name = fn.get("name", "")
++                    call_id = call.get("id") or f"call_{step}_{n}"
++                    try:
++                        arguments = json.loads(fn.get("arguments") or "{}")
++                        if not isinstance(arguments, dict):
++                            raise ValueError("arguments must be a JSON object")
++                    except ValueError as e:
++                        result_text = f"tool error: could not read the arguments ({e}); send a JSON object"
++                    else:
++                        say(f"\n[{step}] agent calls {name}({json.dumps(arguments)})")
++                        result = await session.call_tool(name, arguments)
++                        body = "\n".join(c.text for c in result.content if getattr(c, "text", None))
++                        result_text = ("tool error: " if field(result, "is_error", "isError") else "") + body
++                    say(f"    result: {result_text}")
++                    messages.append({"role": "tool", "tool_call_id": call_id, "content": result_text})
++            say("\nstopped: the step limit was reached before the model finished")
++            return ""
++
++
++def default_task(config_path: Path) -> str:
++    return (
++        "Propose a progressive rollout for this configuration by calling rollout_plan with exactly this config "
++        f"(parsed from the YAML below). Then call rollout_status with config set to {config_path.name!r}. "
++        "If rollout_status reports an error, say what it says.\n\n" + config_path.read_text()
++    )
++
++
++def main(argv: list[str] | None = None) -> int:
++    p = argparse.ArgumentParser(description="Drive the Slowroll MCP server with an AI model")
++    p.add_argument("--config", default="rollout.local.yml", help="rollout config the agent should plan")
++    p.add_argument("--task", help="replace the default task text")
++    p.add_argument("--server", default="slowroll-mcp", help="command that starts the MCP server")
++    p.add_argument("--max-steps", type=int, default=8)
++    p.add_argument("--log", help="also write a markdown transcript to this file")
++    args = p.parse_args(argv)
++
++    missing = [v for v in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL") if not (os.environ.get(v) or "").strip()]
++    if missing:
++        print(f"set {', '.join(missing)} (see the top of this file for examples)", file=sys.stderr)
++        return 2
++    task = args.task or default_task(Path(args.config))
++
++    lines: list[str] = []
++    final = asyncio.run(
++        run_agent(
++            args.server.split(),
++            os.environ["LLM_BASE_URL"].strip(),
++            os.environ["LLM_API_KEY"].strip(),
++            os.environ["LLM_MODEL"].strip(),
++            task,
++            args.max_steps,
++            log=lines.append,
++        )
++    )
++    if args.log:
++        header = f"# Agent run\n\nModel: `{os.environ['LLM_MODEL'].strip()}` via an OpenAI-compatible API. Tools: the Slowroll MCP server (plan, status, halt; no approve).\n\n```\n"
++        Path(args.log).write_text(header + "\n".join(lines) + "\n```\n")
++        print(f"\ntranscript written to {args.log}")
++    print("\nA person still has to merge the pull request, run `slowroll apply` and add the approval label.")
++    return 0 if final else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/scripts/demo.sh b/scripts/demo.sh
+index c869482..542051c 100755
+--- a/scripts/demo.sh
++++ b/scripts/demo.sh
+@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
+ 
+ URL="${DEMO_URL:-https://slowroll-demo.vercel.app}"
+ CFG=/tmp/slowroll-demo.yml
++ROLLOUT_FILE="${ROLLOUT_FILE:-rollout.yml}"
+ RPS="${RPS:-4}"
+ USERS="${USERS:-40}"
+ RAMP_SECONDS="${RAMP_SECONDS:-90}"
+@@ -11,8 +12,8 @@ HALT_SECONDS="${HALT_SECONDS:-40}"
+ GATE_SECONDS="${GATE_SECONDS:-90}"
+ FINISH_SECONDS="${FINISH_SECONDS:-60}"
+ 
+-if [ ! -s rollout.yml ]; then
+-  echo "rollout.yml is missing or empty in $(pwd). Restore it with: git checkout -- rollout.yml" >&2
++if [ ! -s "$ROLLOUT_FILE" ]; then
++  echo "$ROLLOUT_FILE is missing or empty in $(pwd). Restore it with: git checkout -- rollout.yml (or run scripts/local_setup.py for a local one)" >&2
+   exit 2
+ fi
+ 
+@@ -53,7 +54,7 @@ for _ in 1 2 3; do
+   sleep 1
+ done
+ 
+-sed -e 's/^soak:.*/soak: 15s/' -e "s#^  url: .*#  url: $URL/api/health#" rollout.yml > "$CFG"
++sed -e 's/^soak:.*/soak: 15s/' -e "s#^  url: .*#  url: $URL/api/health#" "$ROLLOUT_FILE" > "$CFG"
+ echo "demo config:"; cat "$CFG"
+ 
+ fresh || exit 1
+diff --git a/scripts/local_setup.py b/scripts/local_setup.py
+new file mode 100644
+index 0000000..2b799c0
+--- /dev/null
++++ b/scripts/local_setup.py
+@@ -0,0 +1,117 @@
++"""Prepare a local Flagsmith for the Slowroll demo.
++
++Given an organisation Admin API key, this finds your project, creates the two demo flags if they are
++missing (both off), reads the environment's client-side key and writes a ready rollout config.
++
++    export FLAGSMITH_API_URL=http://localhost:8000
++    export FLAGSMITH_API_KEY=<organisation admin api key>
++    python scripts/local_setup.py --github-repo your-name/your-repo
++
++It only creates what is missing and never turns a flag on. Safe to run again.
++"""
++
++from __future__ import annotations
++
++import argparse
++import sys
++from pathlib import Path
++from typing import Any
++from urllib.parse import quote
++
++import yaml
++
++from slowroll.flagsmith import Flagsmith, SlowrollError, client_from_env
++
++STEPS = [5, 25, 50, 100]
++
++
++def items(data: Any) -> list[dict[str, Any]]:
++    """Flagsmith returns either a bare list or a paginated {"results": [...]} depending on the endpoint."""
++    if isinstance(data, dict):
++        data = data.get("results", [])
++    if not isinstance(data, list):
++        raise SlowrollError(f"unexpected response shape: {str(data)[:200]}")
++    return data
++
++
++def pick_project(fs: Flagsmith, wanted: int | None) -> dict[str, Any]:
++    projects = items(fs.request("GET", "/api/v1/projects/"))
++    if wanted is not None:
++        for p in projects:
++            if p.get("id") == wanted:
++                return p
++        raise SlowrollError(f"project {wanted} not found; the key can see: {[(p.get('id'), p.get('name')) for p in projects]}")
++    if not projects:
++        raise SlowrollError("this key sees no projects; create one in the dashboard first (open-source Flagsmith allows one)")
++    if len(projects) > 1:
++        raise SlowrollError(f"several projects found, pass --project: {[(p.get('id'), p.get('name')) for p in projects]}")
++    return projects[0]
++
++
++def ensure_feature(fs: Flagsmith, project: int, name: str) -> str:
++    found = items(fs.request("GET", f"/api/v1/projects/{project}/features/?search={quote(name)}"))
++    if any(f.get("name") == name for f in found):
++        return "exists"
++    fs.request("POST", f"/api/v1/projects/{project}/features/", {"name": name, "default_enabled": False})
++    return "created, off"
++
++
++def pick_environment(fs: Flagsmith, project: int, name: str) -> dict[str, Any]:
++    envs = items(fs.request("GET", f"/api/v1/projects/{project}/environments/"))
++    for e in envs:
++        if e.get("name", "").lower() == name.lower():
++            if not e.get("api_key"):
++                raise SlowrollError(f"environment {name!r} has no api_key field in the response: {sorted(e)}")
++            return e
++    raise SlowrollError(f"environment {name!r} not found; available: {[e.get('name') for e in envs]}")
++
++
++def build_config(flag: str, project: int, env_key: str, health_url: str, repo: str | None) -> dict[str, Any]:
++    cfg: dict[str, Any] = {
++        "flag": flag,
++        "project": project,
++        "environment": env_key,
++        "steps": STEPS,
++        "soak": "10m",
++        "approval": {"before_step": 50},
++        "health": {"url": health_url, "fail_after": 2, "unknown_comment_every": 6},
++    }
++    if repo:
++        cfg["github"] = {"repo": repo}
++    return cfg
++
++
++def main(argv: list[str] | None = None) -> int:
++    p = argparse.ArgumentParser(description="Prepare a local Flagsmith for the Slowroll demo")
++    p.add_argument("--project", type=int, help="project id (needed only if the key sees several projects)")
++    p.add_argument("--environment", default="Development", help="environment name, default Development")
++    p.add_argument("--flag", default="new_checkout")
++    p.add_argument("--chaos-flag", default="inject_errors")
++    p.add_argument("--health-url", default="http://127.0.0.1:8080/api/health")
++    p.add_argument("--github-repo", help="owner/name; leave out to use GITHUB_REPOSITORY")
++    p.add_argument("--out", default="rollout.local.yml")
++    args = p.parse_args(argv)
++
++    try:
++        fs = client_from_env()
++        project = pick_project(fs, args.project)
++        print(f"project: {project['id']} ({project.get('name')})")
++        for name in (args.flag, args.chaos_flag):
++            print(f"flag {name}: {ensure_feature(fs, project['id'], name)}")
++        env = pick_environment(fs, project["id"], args.environment)
++    except SlowrollError as e:
++        print(f"error: {e}", file=sys.stderr)
++        return 1
++
++    out = Path(args.out)
++    out.write_text(yaml.safe_dump(build_config(args.flag, project["id"], env["api_key"], args.health_url, args.github_repo), sort_keys=False))
++    print(f"wrote {out}")
++    print("\nNext:")
++    print(f"  export FLAGSMITH_ENVIRONMENT_KEY={env['api_key']}")
++    print("  python demo/local_demo.py &")
++    print(f"  slowroll doctor {out}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/test_agent_demo.py b/tests/test_agent_demo.py
+new file mode 100644
+index 0000000..36c7efe
+--- /dev/null
++++ b/tests/test_agent_demo.py
+@@ -0,0 +1,281 @@
++from __future__ import annotations
++
++import asyncio
++import importlib.util
++import json
++import sys
++import threading
++from http.server import BaseHTTPRequestHandler, HTTPServer
++from pathlib import Path
++
++import pytest
++
++pytest.importorskip("mcp")
++
++from slowroll import mcp_server  # noqa: E402
++
++SPEC = importlib.util.spec_from_file_location("agent_demo", Path(__file__).resolve().parents[1] / "scripts" / "agent_demo.py")
++agent_demo = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(agent_demo)
++
++FAKE_SERVER = '''
++from typing import Any
++try:
++    from mcp.server.mcpserver import MCPServer
++except ImportError:
++    from mcp.server.fastmcp import FastMCP as MCPServer
++
++mcp = MCPServer("fake-slowroll")
++
++
++@mcp.tool()
++def rollout_plan(config: dict[str, Any], path: str = "rollout.yml") -> str:
++    """Propose a rollout."""
++    return f"opened pull request for {config['flag']} at {path}"
++
++
++@mcp.tool()
++def rollout_status(config: str = "rollout.yml") -> str:
++    """Report status."""
++    return f"status of {config}: idle"
++
++
++@mcp.tool()
++def rollout_halt(config: str = "rollout.yml", reason: str | None = None) -> str:
++    """Halt."""
++    return f"halted: {reason}"
++
++
++mcp.run()
++'''
++
++
++class FakeLlm:
++    """A stand-in for an OpenAI-compatible API that replies from a script and records every request."""
++
++    def __init__(self, script):
++        self.script = list(script)
++        self.requests = []
++        outer = self
++
++        class Handler(BaseHTTPRequestHandler):
++            def do_POST(self):
++                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
++                outer.requests.append({"path": self.path, "auth": self.headers.get("Authorization"), "body": body})
++                raw = json.dumps({"choices": [{"message": outer.script.pop(0)}]}).encode()
++                self.send_response(200)
++                self.send_header("Content-Length", str(len(raw)))
++                self.end_headers()
++                self.wfile.write(raw)
++
++            def log_message(self, *args):
++                pass
++
++        self.server = HTTPServer(("127.0.0.1", 0), Handler)
++        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1"
++        threading.Thread(target=self.server.serve_forever, daemon=True).start()
++
++    def close(self):
++        self.server.shutdown()
++        self.server.server_close()
++
++
++def tool_call(name, arguments, call_id="c1"):
++    args = arguments if isinstance(arguments, str) else json.dumps(arguments)
++    return {"role": "assistant", "content": None, "tool_calls": [{"id": call_id, "type": "function", "function": {"name": name, "arguments": args}}]}
++
++
++@pytest.fixture
++def fake_server(tmp_path):
++    path = tmp_path / "fake_server.py"
++    path.write_text(FAKE_SERVER)
++    return [sys.executable, str(path)]
++
++
++@pytest.fixture(autouse=True)
++def no_proxy(monkeypatch):
++    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
++    monkeypatch.setenv("no_proxy", "127.0.0.1")
++
++
++def run(fake_server, llm, task="do it", max_steps=8, log=None):
++    return asyncio.run(
++        agent_demo.run_agent(fake_server, llm.url, "sk-test", "some-model", task, max_steps, log=log or (lambda s: None), env={})
++    )
++
++
++def test_simplify_schema_unwraps_optional_and_drops_unsupported_keywords():
++    schema = {
++        "type": "object",
++        "title": "Args",
++        "additionalProperties": False,
++        "properties": {
++            "reason": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None, "title": "Reason"},
++            "nested": {"type": "object", "properties": {"x": {"type": "integer", "default": 3}}},
++        },
++        "required": ["nested"],
++    }
++    assert agent_demo.simplify_schema(schema) == {
++        "type": "object",
++        "properties": {"reason": {"type": "string"}, "nested": {"type": "object", "properties": {"x": {"type": "integer"}}}},
++        "required": ["nested"],
++    }
++
++
++def test_the_real_slowroll_tools_convert_to_clean_openai_tools():
++    tools = agent_demo.openai_tools(asyncio.run(mcp_server.mcp.list_tools()))
++    assert sorted(t["function"]["name"] for t in tools) == ["rollout_halt", "rollout_plan", "rollout_status"]
++    text = json.dumps(tools)
++    for banned in ('"title"', '"default"', '"additionalProperties"', '"anyOf"'):
++        assert banned not in text
++    halt = next(t for t in tools if t["function"]["name"] == "rollout_halt")
++    assert halt["function"]["parameters"]["properties"]["reason"]["type"] == "string"
++
++
++class Reply:
++    def __init__(self, status, payload=None, headers=None, text=""):
++        self.status_code = status
++        self._payload = payload
++        self.headers = headers or {}
++        self.text = text
++
++    def json(self):
++        return self._payload
++
++
++def test_chat_retries_rate_limits_and_honours_retry_after():
++    replies = [Reply(429, headers={"Retry-After": "20"}), Reply(503), Reply(200, {"choices": [{"message": {"content": "hi"}}]})]
++    sleeps = []
++    out = agent_demo.chat("http://x/v1/", "k", "m", [], [], sleep=sleeps.append, post=lambda *a, **kw: replies.pop(0))
++    assert out == {"content": "hi"}
++    assert sleeps == [20, 10]
++
++
++def test_chat_gives_up_with_the_status_and_a_snippet_on_a_client_error():
++    with pytest.raises(SystemExit, match="HTTP 401: bad key"):
++        agent_demo.chat("http://x/v1", "k", "m", [], [], sleep=lambda s: None, post=lambda *a, **kw: Reply(401, text="bad key"))
++
++
++def test_chat_gives_up_after_the_retry_budget():
++    replies = [Reply(429)] * 4
++    with pytest.raises(SystemExit, match="HTTP 429"):
++        agent_demo.chat("http://x/v1", "k", "m", [], [], sleep=lambda s: None, post=lambda *a, **kw: replies.pop(0))
++
++
++def test_chat_reports_a_reply_without_choices():
++    with pytest.raises(SystemExit, match="unexpected reply"):
++        agent_demo.chat("http://x/v1", "k", "m", [], [], post=lambda *a, **kw: Reply(200, {"oops": 1}, text="{oops}"))
++
++
++def test_server_env_passes_slowroll_settings_but_never_the_model_key(monkeypatch):
++    monkeypatch.setenv("LLM_API_KEY", "sk-secret")
++    monkeypatch.setenv("FLAGSMITH_API_KEY", "fs-key")
++    monkeypatch.setenv("GITHUB_TOKEN", "gh-token")
++    env = agent_demo.server_env()
++    assert env["FLAGSMITH_API_KEY"] == "fs-key" and env["GITHUB_TOKEN"] == "gh-token"
++    assert "LLM_API_KEY" not in env and "sk-secret" not in env.values()
++
++
++def test_agent_runs_a_tool_and_feeds_the_result_back_to_the_model(fake_server):
++    llm = FakeLlm([tool_call("rollout_status", {"config": "rollout.local.yml"}), {"role": "assistant", "content": "It is idle. A person must apply it."}])
++    transcript = []
++    try:
++        final = run(fake_server, llm, log=transcript.append)
++    finally:
++        llm.close()
++    assert final == "It is idle. A person must apply it."
++    first, second = llm.requests
++    assert first["path"] == "/v1/chat/completions" and first["auth"] == "Bearer sk-test"
++    assert sorted(t["function"]["name"] for t in first["body"]["tools"]) == ["rollout_halt", "rollout_plan", "rollout_status"]
++    assert first["body"]["messages"][0]["role"] == "system" and "cannot approve" in first["body"]["messages"][0]["content"]
++    tool_message = second["body"]["messages"][-1]
++    assert tool_message == {"role": "tool", "tool_call_id": "c1", "content": "status of rollout.local.yml: idle"}
++    assert any("agent calls rollout_status" in line for line in transcript)
++
++
++def test_agent_can_make_several_calls_in_a_row(fake_server):
++    llm = FakeLlm(
++        [
++            tool_call("rollout_plan", {"config": {"flag": "new_checkout"}}, "a"),
++            tool_call("rollout_halt", {"reason": "demo"}, "b"),
++            {"role": "assistant", "content": "done"},
++        ]
++    )
++    try:
++        assert run(fake_server, llm) == "done"
++    finally:
++        llm.close()
++    contents = [m["content"] for m in llm.requests[-1]["body"]["messages"] if m["role"] == "tool"]
++    assert contents == ["opened pull request for new_checkout at rollout.yml", "halted: demo"]
++
++
++def test_a_tool_error_is_reported_to_the_model_not_raised(fake_server):
++    llm = FakeLlm([tool_call("rollout_plan", {"wrong": 1}), {"role": "assistant", "content": "it failed"}])
++    try:
++        assert run(fake_server, llm) == "it failed"
++    finally:
++        llm.close()
++    tool_message = llm.requests[-1]["body"]["messages"][-1]
++    assert tool_message["content"].startswith("tool error: ")
++
++
++def test_unreadable_arguments_go_back_to_the_model_so_it_can_retry(fake_server):
++    llm = FakeLlm([tool_call("rollout_status", "not json"), {"role": "assistant", "content": "ok"}])
++    try:
++        run(fake_server, llm)
++    finally:
++        llm.close()
++    assert "could not read the arguments" in llm.requests[-1]["body"]["messages"][-1]["content"]
++
++
++def test_a_missing_tool_call_id_is_filled_in(fake_server):
++    message = tool_call("rollout_status", {})
++    message["tool_calls"][0]["id"] = ""
++    llm = FakeLlm([message, {"role": "assistant", "content": "ok"}])
++    try:
++        run(fake_server, llm)
++    finally:
++        llm.close()
++    assert llm.requests[-1]["body"]["messages"][-1]["tool_call_id"] == "call_1_0"
++
++
++def test_the_step_limit_stops_a_model_that_never_finishes(fake_server):
++    llm = FakeLlm([tool_call("rollout_status", {}, f"c{i}") for i in range(3)])
++    transcript = []
++    try:
++        assert run(fake_server, llm, max_steps=3, log=transcript.append) == ""
++    finally:
++        llm.close()
++    assert any("step limit" in line for line in transcript)
++
++
++def test_default_task_embeds_the_config_and_names_the_status_file(tmp_path):
++    cfg = tmp_path / "rollout.local.yml"
++    cfg.write_text("flag: new_checkout\nproject: 1\n")
++    task = agent_demo.default_task(cfg)
++    assert "flag: new_checkout" in task and "'rollout.local.yml'" in task
++
++
++def test_main_asks_for_the_model_settings(monkeypatch, capsys):
++    for name in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"):
++        monkeypatch.delenv(name, raising=False)
++    assert agent_demo.main([]) == 2
++    assert "LLM_BASE_URL, LLM_API_KEY, LLM_MODEL" in capsys.readouterr().err
++
++
++def test_main_writes_a_transcript(monkeypatch, tmp_path, fake_server, capsys):
++    llm = FakeLlm([tool_call("rollout_status", {}), {"role": "assistant", "content": "Idle."}])
++    cfg = tmp_path / "rollout.local.yml"
++    cfg.write_text("flag: new_checkout\n")
++    log = tmp_path / "run.md"
++    monkeypatch.setenv("LLM_BASE_URL", llm.url)
++    monkeypatch.setenv("LLM_API_KEY", "sk-test")
++    monkeypatch.setenv("LLM_MODEL", "some-model")
++    try:
++        code = agent_demo.main(["--config", str(cfg), "--server", " ".join(fake_server), "--log", str(log)])
++    finally:
++        llm.close()
++    assert code == 0
++    text = log.read_text()
++    assert "some-model" in text and "agent calls rollout_status" in text and "sk-test" not in text
++    assert "still has to merge the pull request" in capsys.readouterr().out
+diff --git a/tests/test_local_demo.py b/tests/test_local_demo.py
+new file mode 100644
+index 0000000..9e16a4f
+--- /dev/null
++++ b/tests/test_local_demo.py
+@@ -0,0 +1,217 @@
++from __future__ import annotations
++
++import importlib.util
++import json
++import threading
++import urllib.error
++import urllib.request
++from http.server import BaseHTTPRequestHandler, HTTPServer
++from pathlib import Path
++
++import pytest
++
++SPEC = importlib.util.spec_from_file_location("local_demo", Path(__file__).resolve().parents[1] / "demo" / "local_demo.py")
++local_demo = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(local_demo)
++
++
++def counts(c_req=0, c_err=0, t_req=0, t_err=0):
++    return {"control": {"req": c_req, "err": c_err}, "treatment": {"req": t_req, "err": t_err}}
++
++
++def test_health_is_unknown_when_treatment_has_too_few_requests():
++    out = local_demo.health_payload(counts(c_req=50, t_req=3), 60, 10, 0.05)
++    assert out["healthy"] is None
++    assert "fewer than 10" in out["detail"]
++
++
++def test_health_is_true_when_there_is_no_treatment_traffic_but_control_has_a_baseline():
++    out = local_demo.health_payload(counts(c_req=20), 60, 10, 0.05)
++    assert out["healthy"] is True
++    assert "nothing to compare" in out["detail"]
++
++
++def test_health_is_unknown_when_nothing_has_arrived():
++    assert local_demo.health_payload(counts(), 60, 10, 0.05)["healthy"] is None
++
++
++def test_health_is_false_when_treatment_errors_exceed_control_by_more_than_the_delta():
++    out = local_demo.health_payload(counts(c_req=100, c_err=0, t_req=20, t_err=10), 60, 10, 0.05)
++    assert out["healthy"] is False
++    assert out["detail"] == "treatment errors 10/20 (50.0%) vs control 0/100 (0.0%) over 60s"
++
++
++def test_health_is_true_when_the_gap_is_within_the_delta():
++    assert local_demo.health_payload(counts(c_req=100, c_err=5, t_req=100, t_err=8), 60, 10, 0.05)["healthy"] is True
++
++
++def test_counters_drop_buckets_outside_the_window():
++    now = [1000.0]
++    c = local_demo.Counters(lambda: now[0])
++    c.add("treatment", True)
++    c.add("control", False)
++    assert c.window(60) == counts(c_req=1, t_req=1, t_err=1)
++    now[0] += 61
++    assert c.window(60) == counts()
++
++
++def test_counters_forget_buckets_older_than_the_keep_time():
++    now = [1000.0]
++    c = local_demo.Counters(lambda: now[0])
++    c.add("control", False)
++    now[0] += 400
++    c.add("control", False)
++    assert len(c.data) == 1
++
++
++class Running:
++    def __init__(self, flags, clock=None, **kw):
++        self.flags = flags
++        self.calls = []
++
++        def fetch(uid):
++            self.calls.append(uid)
++            result = self.flags(uid) if callable(self.flags) else self.flags
++            if isinstance(result, Exception):
++                raise result
++            return result
++
++        extra = {"clock": clock} if clock else {}
++        self.server = local_demo.make_server("127.0.0.1", 0, fetch_flags=fetch, **extra, **kw)
++        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
++        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
++
++    def __enter__(self):
++        self.thread.start()
++        return self
++
++    def __exit__(self, *exc):
++        self.server.shutdown()
++        self.server.server_close()
++
++    def get(self, path):
++        try:
++            with urllib.request.urlopen(self.base + path, timeout=5) as r:
++                return r.status, r.read().decode(), dict(r.headers)
++        except urllib.error.HTTPError as e:
++            return e.code, e.read().decode(), dict(e.headers)
++
++
++def test_checkout_assigns_variant_from_the_flag_and_counts_it():
++    with Running({"new_checkout": True, "inject_errors": False}) as app:
++        status, body, _ = app.get("/api/checkout?uid=u1")
++        assert status == 200
++        assert json.loads(body) == {"uid": "u1", "variant": "treatment", "ok": True}
++        _, health, _ = app.get("/api/health")
++        assert json.loads(health)["counts"]["treatment"] == {"req": 1, "err": 0}
++
++
++def test_chaos_flag_fails_treatment_requests_only():
++    with Running(lambda uid: {"new_checkout": uid == "t", "inject_errors": True}) as app:
++        assert app.get("/api/checkout?uid=t")[0] == 500
++        assert app.get("/api/checkout?uid=c")[0] == 200
++        health = json.loads(app.get("/api/health")[1])
++        assert health["counts"] == counts(c_req=1, t_req=1, t_err=1)
++
++
++def test_flag_service_failure_degrades_to_control_and_is_not_counted():
++    with Running(OSError("down")) as app:
++        status, body, _ = app.get("/api/checkout?uid=u1")
++        assert status == 200
++        assert json.loads(body) == {"uid": "u1", "variant": "control", "ok": True, "degraded": True}
++        assert json.loads(app.get("/api/health")[1])["counts"] == counts()
++
++
++def test_flags_are_cached_per_user_for_ten_seconds():
++    now = [5000.0]
++    with Running({"new_checkout": False}, clock=lambda: now[0]) as app:
++        app.get("/api/checkout?uid=u1")
++        app.get("/api/checkout?uid=u1")
++        assert app.calls == ["u1"]
++        now[0] += 11
++        app.get("/api/checkout?uid=u1")
++        assert app.calls == ["u1", "u1"]
++
++
++def test_health_json_is_compact_so_the_demo_script_can_grep_it():
++    with Running({"new_checkout": False}) as app:
++        for i in range(12):
++            app.get(f"/api/checkout?uid=u{i}")
++        status, body, headers = app.get("/api/health")
++        assert status == 200
++        assert '"healthy":true' in body
++        assert headers["Cache-Control"] == "no-store"
++
++
++def test_slowrolls_own_health_reader_understands_the_local_demo(monkeypatch):
++    from slowroll.health import fetch_health
++
++    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
++    with Running(lambda uid: {"new_checkout": uid.startswith("t"), "inject_errors": False}) as app:
++        for i in range(12):
++            app.get(f"/api/checkout?uid=c{i}")
++        assert fetch_health(app.base + "/api/health").healthy is True  # baseline only, nothing to compare
++        for i in range(12):
++            app.get(f"/api/checkout?uid=t{i}")
++        ok = fetch_health(app.base + "/api/health")
++        assert ok.healthy is True and "treatment errors 0/12" in ok.detail
++
++    with Running(lambda uid: {"new_checkout": uid.startswith("t"), "inject_errors": True}) as app:
++        for i in range(12):
++            app.get(f"/api/checkout?uid=c{i}")
++            app.get(f"/api/checkout?uid=t{i}")
++        bad = fetch_health(app.base + "/api/health")
++        assert bad.healthy is False and "treatment errors 12/12" in bad.detail
++
++
++def test_uid_defaults_and_is_cut_to_64_characters():
++    with Running({"new_checkout": False}) as app:
++        assert json.loads(app.get("/api/checkout")[1])["uid"] == "anonymous"
++        assert len(json.loads(app.get("/api/checkout?uid=" + "x" * 200)[1])["uid"]) == 64
++
++
++def test_serves_the_demo_page_and_404s_elsewhere():
++    with Running({}) as app:
++        status, body, headers = app.get("/")
++        assert status == 200 and "Slowroll demo checkout" in body
++        assert headers["Content-Type"].startswith("text/html")
++        assert app.get("/nope")[0] == 404
++
++
++def test_identity_flags_posts_the_identifier_with_the_environment_key():
++    seen = {}
++
++    class FakeFlagsmith(BaseHTTPRequestHandler):
++        def do_POST(self):
++            seen["path"] = self.path
++            seen["key"] = self.headers.get("X-Environment-Key")
++            seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
++            raw = json.dumps({"flags": [{"feature": {"name": "new_checkout"}, "enabled": True}, {"feature": {"name": "inject_errors"}, "enabled": False}]}).encode()
++            self.send_response(200)
++            self.send_header("Content-Length", str(len(raw)))
++            self.end_headers()
++            self.wfile.write(raw)
++
++        def log_message(self, *args):
++            pass
++
++    fake = HTTPServer(("127.0.0.1", 0), FakeFlagsmith)
++    threading.Thread(target=fake.serve_forever, daemon=True).start()
++    try:
++        flags = local_demo.identity_flags(f"http://127.0.0.1:{fake.server_address[1]}/", "envkey", "user-9")
++    finally:
++        fake.shutdown()
++        fake.server_close()
++    assert flags == {"new_checkout": True, "inject_errors": False}
++    assert seen == {"path": "/api/v1/identities/", "key": "envkey", "body": {"identifier": "user-9", "traits": []}}
++
++
++@pytest.mark.parametrize("name", ["FLAGSMITH_API_URL", "FLAGSMITH_ENVIRONMENT_KEY"])
++def test_main_refuses_to_start_without_flagsmith_settings(monkeypatch, name):
++    monkeypatch.setenv("FLAGSMITH_API_URL", "http://x")
++    monkeypatch.setenv("FLAGSMITH_ENVIRONMENT_KEY", "k")
++    monkeypatch.delenv(name)
++    monkeypatch.setattr("sys.argv", ["local_demo.py"])
++    with pytest.raises(SystemExit) as e:
++        local_demo.main()
++    assert "FLAGSMITH_ENVIRONMENT_KEY" in str(e.value)
+diff --git a/tests/test_local_setup.py b/tests/test_local_setup.py
+new file mode 100644
+index 0000000..fe4dac4
+--- /dev/null
++++ b/tests/test_local_setup.py
+@@ -0,0 +1,120 @@
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++import pytest
++import yaml
++
++from slowroll.config import parse_config
++from slowroll.flagsmith import Flagsmith, SlowrollError
++
++from test_flagsmith import FakeResponse, FakeSession
++
++SPEC = importlib.util.spec_from_file_location("local_setup", Path(__file__).resolve().parents[1] / "scripts" / "local_setup.py")
++local_setup = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(local_setup)
++
++PROJECT = {"id": 1, "name": "slowroll-demo"}
++ENVS = {"results": [{"name": "Development", "api_key": "devkey"}, {"name": "Production", "api_key": "prodkey"}]}
++
++
++def client(*responses):
++    session = FakeSession(*responses)
++    return Flagsmith("http://fs.test", "secret", session=session, sleep=lambda s: None), session
++
++
++def test_items_accepts_a_bare_list_and_a_paginated_object_and_rejects_the_rest():
++    assert local_setup.items([{"a": 1}]) == [{"a": 1}]
++    assert local_setup.items({"results": [{"a": 1}]}) == [{"a": 1}]
++    with pytest.raises(SlowrollError, match="unexpected response shape"):
++        local_setup.items({"results": "nope"})
++
++
++def test_pick_project_takes_the_only_project():
++    fs, _ = client(FakeResponse(200, [PROJECT]))
++    assert local_setup.pick_project(fs, None) == PROJECT
++
++
++def test_pick_project_asks_for_a_choice_when_there_are_several():
++    fs, _ = client(FakeResponse(200, [PROJECT, {"id": 2, "name": "other"}]))
++    with pytest.raises(SlowrollError, match="pass --project"):
++        local_setup.pick_project(fs, None)
++
++
++def test_pick_project_by_id_and_when_missing():
++    fs, _ = client(FakeResponse(200, [PROJECT]))
++    assert local_setup.pick_project(fs, 1) == PROJECT
++    fs, _ = client(FakeResponse(200, [PROJECT]))
++    with pytest.raises(SlowrollError, match="project 9 not found"):
++        local_setup.pick_project(fs, 9)
++
++
++def test_pick_project_with_no_projects_says_what_to_do():
++    fs, _ = client(FakeResponse(200, []))
++    with pytest.raises(SlowrollError, match="create one in the dashboard"):
++        local_setup.pick_project(fs, None)
++
++
++def test_ensure_feature_leaves_an_existing_flag_alone():
++    fs, s = client(FakeResponse(200, {"results": [{"id": 1, "name": "new_checkout"}]}))
++    assert local_setup.ensure_feature(fs, 1, "new_checkout") == "exists"
++    assert [c["method"] for c in s.calls] == ["GET"]
++
++
++def test_ensure_feature_creates_a_missing_flag_switched_off():
++    fs, s = client(FakeResponse(200, {"results": [{"id": 5, "name": "new_checkout_v2"}]}), FakeResponse(201, {"id": 6}))
++    assert local_setup.ensure_feature(fs, 1, "new_checkout") == "created, off"
++    post = s.calls[1]
++    assert post["method"] == "POST" and post["url"].endswith("/api/v1/projects/1/features/")
++    assert post["json"] == {"name": "new_checkout", "default_enabled": False}
++
++
++def test_pick_environment_matches_the_name_ignoring_case():
++    fs, _ = client(FakeResponse(200, ENVS))
++    assert local_setup.pick_environment(fs, 1, "development")["api_key"] == "devkey"
++
++
++def test_pick_environment_lists_the_choices_when_missing():
++    fs, _ = client(FakeResponse(200, ENVS))
++    with pytest.raises(SlowrollError, match="available: \\['Development', 'Production'\\]"):
++        local_setup.pick_environment(fs, 1, "Staging")
++
++
++def test_pick_environment_reports_a_response_without_the_key_field():
++    fs, _ = client(FakeResponse(200, [{"name": "Development", "key": "x"}]))
++    with pytest.raises(SlowrollError, match="no api_key field"):
++        local_setup.pick_environment(fs, 1, "Development")
++
++
++def test_the_config_it_builds_passes_slowrolls_own_validation():
++    raw = local_setup.build_config("new_checkout", 1, "devkey", "http://127.0.0.1:8080/api/health", "me/repo")
++    cfg = parse_config(raw)
++    assert list(cfg.steps) == [5, 25, 50, 100] and cfg.approval_before_step == 50
++    assert "github" not in local_setup.build_config("f", 1, "k", "http://h/x", None)
++
++
++def test_main_writes_the_config_and_prints_next_steps(monkeypatch, tmp_path, capsys):
++    fs, _ = client(
++        FakeResponse(200, [PROJECT]),
++        FakeResponse(200, {"results": [{"name": "new_checkout"}]}),
++        FakeResponse(200, {"results": [{"name": "inject_errors"}]}),
++        FakeResponse(200, ENVS),
++    )
++    monkeypatch.setattr(local_setup, "client_from_env", lambda: fs)
++    out = tmp_path / "rollout.local.yml"
++    assert local_setup.main(["--out", str(out), "--github-repo", "me/repo"]) == 0
++    written = yaml.safe_load(out.read_text())
++    assert written["environment"] == "devkey" and written["project"] == 1 and written["github"] == {"repo": "me/repo"}
++    text = capsys.readouterr().out
++    assert "export FLAGSMITH_ENVIRONMENT_KEY=devkey" in text
++    assert "flag new_checkout: exists" in text
++
++
++def test_main_reports_errors_on_stderr_and_writes_nothing(monkeypatch, tmp_path, capsys):
++    fs, _ = client(FakeResponse(200, []))
++    monkeypatch.setattr(local_setup, "client_from_env", lambda: fs)
++    out = tmp_path / "x.yml"
++    assert local_setup.main(["--out", str(out)]) == 1
++    assert "error:" in capsys.readouterr().err
++    assert not out.exists()
+-- 
+2.43.0
+

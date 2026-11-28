@@ -1,0 +1,39 @@
+# Local self-hosted Flagsmith for trying Slowroll. See docs/LOCAL.md.
+#
+# The image tag is pinned on purpose: Slowroll uses Flagsmith endpoints that are marked experimental,
+# and it is tested against 2.292.0 only. Do not switch to `latest`.
+#
+#   docker compose up -d
+#   open http://localhost:8000 and create the admin account on the welcome screen
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: flagsmith
+      POSTGRES_PASSWORD: flagsmith
+      POSTGRES_DB: flagsmith
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flagsmith -d flagsmith"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  flagsmith:
+    image: flagsmith/flagsmith:2.292.0
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://flagsmith:flagsmith@db:5432/flagsmith
+      DJANGO_ALLOWED_HOSTS: "*"
+      # Local use only. Set your own value if this ever leaves your machine.
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-local-demo-only-change-me-if-this-is-ever-exposed}
+      # Needed on 2.29x to start the metrics module (see docs/deploy-render.md, Things that went wrong).
+      PROMETHEUS_MULTIPROC_DIR: /tmp
+    ports:
+      - "${FLAGSMITH_PORT:-8000}:8000"
+
+volumes:
+  db-data:
