@@ -178,3 +178,20 @@ def test_wrong_environment_key_error_says_what_to_check():
     fs, _, _ = client(FakeResponse(404, text='{"code":"environment_not_found"}'))
     with pytest.raises(SlowrollError, match="client-side environment key"):
         fs.get_flag("YOUR_KEY", 1)
+
+
+def test_request_building_errors_do_not_leak_header_values():
+    fs, _, sleeps = client(requests.exceptions.InvalidHeader("Api-Key super-secret-value"))
+    with pytest.raises(SlowrollError) as e:
+        fs.request("GET", "/x")
+    msg = str(e.value)
+    assert "InvalidHeader" in msg and "super-secret-value" not in msg and "whitespace" in msg and sleeps == []
+
+
+def test_client_from_env_strips_stray_whitespace(monkeypatch):
+    from slowroll.flagsmith import client_from_env
+
+    monkeypatch.setenv("FLAGSMITH_API_URL", "https://fs.test\n")
+    monkeypatch.setenv("FLAGSMITH_API_KEY", " key\n")
+    c = client_from_env()
+    assert c.base == "https://fs.test" and c.headers["Authorization"] == "Api-Key key"
