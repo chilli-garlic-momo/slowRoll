@@ -75,7 +75,7 @@ class GitHub:
 
 
 def github_from_env(cfg: Config) -> GitHub:
-    repo = cfg.repo or os.environ.get("GITHUB_REPOSITORY")
+    repo = cfg.repo or (os.environ.get("GITHUB_REPOSITORY") or "").strip()
     token = (os.environ.get("GITHUB_TOKEN") or "").strip()
     if not repo or not token:
         raise SlowrollError("set GITHUB_TOKEN and github.repo in the config (or GITHUB_REPOSITORY)")

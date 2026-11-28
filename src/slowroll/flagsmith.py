@@ -38,6 +38,9 @@ class Flagsmith:
                     raise SlowrollError(f"{method} {path}: {type(e).__name__}") from e
                 self.sleep(RETRY_WAITS[attempt])
                 continue
+            except requests.RequestException as e:
+                hint = "; check the URL and key for stray whitespace" if isinstance(e, (requests.exceptions.InvalidURL, requests.exceptions.InvalidHeader)) else ""
+                raise SlowrollError(f"{method} {path}: {type(e).__name__}{hint}") from None
             if resp.status_code in RETRY_STATUSES and not last:
                 self.sleep(RETRY_WAITS[attempt])
                 continue
@@ -82,7 +85,8 @@ class Flagsmith:
 
 
 def client_from_env() -> Flagsmith:
-    url, key = os.environ.get("FLAGSMITH_API_URL"), os.environ.get("FLAGSMITH_API_KEY")
+    url = (os.environ.get("FLAGSMITH_API_URL") or "").strip()
+    key = (os.environ.get("FLAGSMITH_API_KEY") or "").strip()
     if not url or not key:
         raise SlowrollError("set FLAGSMITH_API_URL and FLAGSMITH_API_KEY")
     return Flagsmith(url, key)
