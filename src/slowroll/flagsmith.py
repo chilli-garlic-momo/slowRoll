@@ -8,7 +8,7 @@ from urllib.parse import quote
 import requests
 
 TIMEOUT = 90
-RETRY_WAITS = (2, 6)
+RETRY_WAITS = (2, 6, 15, 30, 30)
 RETRY_STATUSES = {502, 503, 504}
 
 
