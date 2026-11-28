@@ -4,10 +4,17 @@ cd "$(dirname "$0")/.."
 
 URL="${DEMO_URL:-https://slowroll-demo.vercel.app}"
 CFG=/tmp/slowroll-demo.yml
-RAMP_SECONDS="${RAMP_SECONDS:-75}"
+RPS="${RPS:-4}"
+USERS="${USERS:-40}"
+RAMP_SECONDS="${RAMP_SECONDS:-90}"
 HALT_SECONDS="${HALT_SECONDS:-40}"
-GATE_SECONDS="${GATE_SECONDS:-75}"
+GATE_SECONDS="${GATE_SECONDS:-90}"
 FINISH_SECONDS="${FINISH_SECONDS:-60}"
+
+if [ ! -s rollout.yml ]; then
+  echo "rollout.yml is missing or empty in $(pwd). Restore it with: git checkout -- rollout.yml" >&2
+  exit 2
+fi
 
 for v in FLAGSMITH_API_URL FLAGSMITH_API_KEY GITHUB_TOKEN GITHUB_REPOSITORY; do
   if [ -z "${!v:-}" ]; then
@@ -15,6 +22,11 @@ for v in FLAGSMITH_API_URL FLAGSMITH_API_KEY GITHUB_TOKEN GITHUB_REPOSITORY; do
     exit 2
   fi
 done
+
+if pgrep -f demo/loadgen.py > /dev/null; then
+  echo "another load generator is still running. Stop it with: pkill -f demo/loadgen.py" >&2
+  exit 2
+fi
 
 pause() { printf '\n>>> %s\n    press Enter to continue ' "$1"; read -r; }
 
@@ -30,18 +42,26 @@ wait_healthy() {
 
 ticks() { timeout -s INT "$1" slowroll loop "$CFG" --every 5s; }
 
+fresh() { slowroll apply "$CFG" && slowroll reset "$CFG"; }
+
 cleanup() { [ -n "${LOADGEN_PID:-}" ] && kill "$LOADGEN_PID" 2>/dev/null; }
 trap cleanup EXIT
+
+echo "checking that Flagsmith answers quickly (anything near 5s means it is overloaded)..."
+for _ in 1 2 3; do
+  curl -s -o /dev/null -w '  liveness %{http_code} in %{time_total}s\n' "$FLAGSMITH_API_URL/health/liveness/"
+  sleep 1
+done
 
 sed -e 's/^soak:.*/soak: 15s/' -e "s#^  url: .*#  url: $URL/api/health#" rollout.yml > "$CFG"
 echo "demo config:"; cat "$CFG"
 
-slowroll reset "$CFG"; slowroll apply "$CFG"
+fresh || exit 1
 pause "open the demo page ($URL), the GitHub issue and the Flagsmith dashboard in your browser"
 
-python demo/loadgen.py --url "$URL" --rps 4 --users 40 --duration 1500 > /tmp/loadgen.log 2>&1 &
+python demo/loadgen.py --url "$URL" --rps "$RPS" --users "$USERS" --duration 1500 > /tmp/loadgen.log 2>&1 &
 LOADGEN_PID=$!
-echo "simulated traffic started (log: /tmp/loadgen.log)"
+echo "simulated traffic started: $RPS requests per second over $USERS users (log: /tmp/loadgen.log)"
 wait_healthy || exit 1
 
 echo; echo "=== PART 1: live ramp ==="
@@ -53,7 +73,7 @@ ticks "$HALT_SECONDS"
 slowroll status "$CFG"
 
 pause "turn the inject_errors flag OFF again in the dashboard"
-slowroll reset "$CFG"; slowroll apply "$CFG"
+fresh || exit 1
 wait_healthy || exit 1
 
 echo; echo "=== PART 2: the approval gate ==="
@@ -63,7 +83,7 @@ pause "add the label slowroll/approve to the open issue on GitHub"
 ticks "$FINISH_SECONDS"
 
 echo; echo "resetting: flag back to idle with a fresh issue"
-slowroll reset "$CFG"; slowroll apply "$CFG"
+fresh || exit 1
 
 pause "optional: show the MCP server (needs the launcher from docs/DEMO.md)"
 if [ -x "$HOME/slowroll-mcp.sh" ]; then python scripts/mcp_demo.py "$HOME/slowroll-mcp.sh"; fi
