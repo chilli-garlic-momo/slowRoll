@@ -77,7 +77,7 @@ def test_plan_updates_an_existing_file_using_its_sha():
 
 def test_plan_rejects_an_invalid_config_with_every_error(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "t")
-    with pytest.raises(ValueError) as e:
+    with pytest.raises(mcp_server.ToolError) as e:
         mcp_server.rollout_plan({"project": 0, "steps": [5, 5]})
     assert "flag" in str(e.value) and "steps" in str(e.value)
 
@@ -121,5 +121,32 @@ def test_real_server_process_starts_and_lists_the_three_tools():
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = read(2)["result"]["tools"]
         assert sorted(t["name"] for t in tools) == ["rollout_halt", "rollout_plan", "rollout_status"]
+    finally:
+        proc.kill()
+
+
+def test_a_failing_tool_tells_the_client_why_over_the_real_protocol():
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "slowroll.mcp_server"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+    )
+
+    def send(msg):
+        proc.stdin.write(json.dumps(msg) + "\n")
+        proc.stdin.flush()
+
+    def read(want_id):
+        while True:
+            msg = json.loads(proc.stdout.readline())
+            if msg.get("id") == want_id:
+                return msg
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}})
+        read(1)
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "rollout_plan", "arguments": {"config": {"project": 0}}}})
+        assert "flag must be a non-empty string" in json.dumps(read(2))
     finally:
         proc.kill()
