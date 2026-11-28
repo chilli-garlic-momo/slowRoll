@@ -66,7 +66,12 @@ class Flagsmith:
         return self.request("PATCH", f"/api/v1/projects/{project}/segments/{segment_id}/", {"rules": percent_rules(percent)})
 
     def get_flag(self, env: str, feature_id: int) -> dict[str, Any]:
-        return self.request("GET", f"/api/__future__/environments/{env}/features/{feature_id}/")
+        try:
+            return self.request("GET", f"/api/__future__/environments/{env}/features/{feature_id}/")
+        except SlowrollError as e:
+            if "environment_not_found" in str(e):
+                raise SlowrollError(f"{e}. Check `environment` in the config: it must be the client-side environment key") from e
+            raise
 
     def set_override(self, env: str, feature_id: int, segment_id: int, enabled: bool) -> Any:
         body = {"segment_overrides": [{"segment": {"id": segment_id}, "enabled": enabled}]}

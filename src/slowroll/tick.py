@@ -12,6 +12,8 @@ from .flagsmith import SlowrollError, segment_percent
 from .health import Health
 from .state import State, StateError, dump_marker, parse_marker
 
+MAX_LOOP_FAILURES = 5
+
 ISSUE_BODY = (
     "Managed by Slowroll. Live status is the first comment below; every action adds a comment after it.\n\n"
     "To approve a gated step, add the label `slowroll/approve`. Anyone with write access can."
@@ -234,12 +236,18 @@ def loop(cfg: Config, fs: Any, gh: Any, every: str, fetch: Callable[[str], Healt
     interval = parse_duration(every)
     if interval is None:
         raise SlowrollError("--every must look like 10s, 1m or 1h")
+    failures = 0
     try:
         while True:
             try:
                 tick(cfg, fs, gh, datetime.now(timezone.utc), fetch)
+                failures = 0
             except SlowrollError as e:
+                failures += 1
                 print(f"error: {e}", file=sys.stderr)
+                if failures >= MAX_LOOP_FAILURES:
+                    print(f"error: giving up after {failures} failed ticks in a row", file=sys.stderr)
+                    return 1
             sleep(interval.total_seconds())
     except KeyboardInterrupt:
         return 0
