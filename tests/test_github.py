@@ -140,3 +140,29 @@ def test_find_issue_can_look_at_closed_issues():
     g, s = gh(FakeResponse(200, [{"number": 4, "title": "Slowroll: f"}]))
     assert g.find_issue("Slowroll: f", state="closed")["number"] == 4
     assert "state=closed" in s.calls[0]["url"]
+
+
+def test_pull_request_helpers_use_the_right_endpoints():
+    g, s = gh(
+        FakeResponse(200, {"default_branch": "main"}),
+        FakeResponse(200, {"object": {"sha": "abc"}}),
+        FakeResponse(201, {}),
+        FakeResponse(404, {"message": "Not Found"}),
+        FakeResponse(200, {"sha": "old"}),
+        FakeResponse(201, {}),
+        FakeResponse(201, {"html_url": "u"}),
+    )
+    assert g.default_branch() == "main"
+    assert g.branch_sha("main") == "abc"
+    g.create_branch("slowroll/x", "abc")
+    assert g.file_sha("rollout.yml", "main") is None
+    assert g.file_sha("rollout.yml", "main") == "old"
+    g.put_file("rollout.yml", "hi", "msg", "slowroll/x", sha="old")
+    assert g.create_pull("T", "slowroll/x", "main", "B")["html_url"] == "u"
+    urls = [c["url"] for c in s.calls]
+    assert urls[0].endswith("/repos/o/r") and urls[1].endswith("/git/ref/heads/main")
+    assert s.calls[2]["json"] == {"ref": "refs/heads/slowroll/x", "sha": "abc"}
+    assert "contents/rollout.yml?ref=main" in urls[3]
+    put = s.calls[5]
+    assert (put["method"], put["json"]["branch"], put["json"]["sha"], put["json"]["content"]) == ("PUT", "slowroll/x", "old", "aGk=")
+    assert s.calls[6]["json"] == {"title": "T", "head": "slowroll/x", "base": "main", "body": "B"}
