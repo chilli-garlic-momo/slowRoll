@@ -39,7 +39,7 @@ echo "demo config:"; cat "$CFG"
 slowroll reset "$CFG"; slowroll apply "$CFG"
 pause "open the demo page ($URL), the GitHub issue and the Flagsmith dashboard in your browser"
 
-python demo/loadgen.py --url "$URL" --rps 12 --users 200 --duration 1500 > /tmp/loadgen.log 2>&1 &
+python demo/loadgen.py --url "$URL" --rps 4 --users 40 --duration 1500 > /tmp/loadgen.log 2>&1 &
 LOADGEN_PID=$!
 echo "simulated traffic started (log: /tmp/loadgen.log)"
 wait_healthy || exit 1
@@ -62,8 +62,8 @@ ticks "$GATE_SECONDS"
 pause "add the label slowroll/approve to the open issue on GitHub"
 ticks "$FINISH_SECONDS"
 
+echo; echo "resetting: flag back to idle with a fresh issue"
+slowroll reset "$CFG"; slowroll apply "$CFG"
+
 pause "optional: show the MCP server (needs the launcher from docs/DEMO.md)"
 if [ -x "$HOME/slowroll-mcp.sh" ]; then python scripts/mcp_demo.py "$HOME/slowroll-mcp.sh"; fi
-
-echo; echo "cleaning up: flag back to idle"
-slowroll reset "$CFG"; slowroll apply "$CFG"
