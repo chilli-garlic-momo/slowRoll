@@ -17,7 +17,9 @@ Everything in the demo is real except the traffic. A load generator simulates it
    ```
 
 4. Browser tabs: the demo page, the repo's issues, and the Flagsmith features page (Development).
-5. `./scripts/demo.sh` runs the whole sequence and pauses where you act. The timers can be changed with `RAMP_SECONDS`, `HALT_SECONDS`, `GATE_SECONDS` and `FINISH_SECONDS`.
+5. Close the Flagsmith dashboard tab, wait five minutes, then run `./scripts/demo.sh`. It times Flagsmith's liveness first, and refuses to start if an old load generator is still running. It runs the whole sequence and pauses where you act.
+6. The simulated load defaults to 4 requests per second over 40 users, because the free Flagsmith instance failed Render's 5-second health check under heavier load. Override it with `RPS` and `USERS` only if you know the instance can take it. The timers can be changed with `RAMP_SECONDS`, `HALT_SECONDS`, `GATE_SECONDS` and `FINISH_SECONDS`.
+7. At 5 percent only one or two of the 40 users are in treatment, so that step can take a while to collect its first ten requests. Cut the wait when you edit.
 
 The real ramp takes about a minute, so record in short takes and cut them together.
 
