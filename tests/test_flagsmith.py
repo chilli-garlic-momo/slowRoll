@@ -107,12 +107,18 @@ def test_retry_on_503_then_success():
     assert len(s.calls) == 2 and sleeps == [2]
 
 
-def test_retry_on_connection_error_waits_2_then_6_then_gives_up():
+def test_retry_on_connection_error_backs_off_long_enough_to_ride_out_a_restart_then_gives_up():
     err = requests.ConnectionError("boom")
-    fs, s, sleeps = client(err, err, err)
+    fs, s, sleeps = client(*[err] * 6)
     with pytest.raises(SlowrollError, match="ConnectionError"):
         fs.request("GET", "/x")
-    assert len(s.calls) == 3 and sleeps == [2, 6]
+    assert len(s.calls) == 6 and sleeps == [2, 6, 15, 30, 30]
+
+
+def test_a_restart_of_about_a_minute_is_survived():
+    fs, s, sleeps = client(*[FakeResponse(502, text="bad gateway")] * 4, FakeResponse(200, {"ok": 1}))
+    assert fs.request("GET", "/x") == {"ok": 1}
+    assert sum(sleeps) == 53
 
 
 def test_no_retry_on_400_and_error_is_trimmed_without_headers():
