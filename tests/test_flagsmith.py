@@ -172,3 +172,9 @@ def test_segment_percent_reads_the_real_shape_and_tolerates_garbage():
     assert segment_percent({"rules": percent_rules(25)}) == 25
     assert segment_percent({"rules": []}) is None
     assert segment_percent({}) is None
+
+
+def test_wrong_environment_key_error_says_what_to_check():
+    fs, _, _ = client(FakeResponse(404, text='{"code":"environment_not_found"}'))
+    with pytest.raises(SlowrollError, match="client-side environment key"):
+        fs.get_flag("YOUR_KEY", 1)

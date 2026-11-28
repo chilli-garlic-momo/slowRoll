@@ -437,3 +437,10 @@ def test_tick_after_the_rollout_finished_is_a_clean_noop():
 
     out = lines_of(tick, CFG, FakeFs(), ClosedGh(), NOW, lambda url: Health(True))
     assert len(out) == 1 and "finished" in out[0]
+
+
+def test_loop_gives_up_after_five_failed_ticks_in_a_row(capsys):
+    sleeps: list[float] = []
+    code = loop(CFG, FakeFs(), FakeGh(), "5s", lambda url: Health(True), sleep=sleeps.append)
+    assert code == 1 and len(sleeps) == 4
+    assert "giving up after 5" in capsys.readouterr().err
