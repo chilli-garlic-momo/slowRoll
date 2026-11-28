@@ -1,11 +1,13 @@
 flag: new_checkout
 project: 1
 environment: YY7jkBc7fLLpnqhyfUbwXb
-steps: [5, 25, 50, 100]
+steps:
+- 5
+- 25
+- 50
+- 100
 soak: 10m
 approval:
   before_step: 50
 health:
   url: https://slowroll-demo.vercel.app/api/health
-  fail_after: 2
-  unknown_comment_every: 6
